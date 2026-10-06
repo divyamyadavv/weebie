@@ -10,10 +10,24 @@ const {
   removeRemoteVoiceStream,
   replaceVoiceTrack,
   replaceVoiceTracks,
+  serializeVoiceDescription,
   shouldInitiateVoiceOffer,
   shouldReplaceVoicePeer,
   upsertRemoteVoiceStream,
 } = require("../lib/voiceMesh.cjs");
+
+test("serializes offer and answer descriptions as plain signaling data", () => {
+  const description = Object.assign(Object.create({ browserPrototype: true }), {
+    type: "offer",
+    sdp: "v=0\r\n",
+    unrelated: "not sent",
+  });
+  assert.deepEqual(serializeVoiceDescription(description), {
+    type: "offer",
+    sdp: "v=0\r\n",
+  });
+  assert.equal(Object.getPrototypeOf(serializeVoiceDescription(description)), Object.prototype);
+});
 
 test("marks voice signals older than sixty seconds as stale", () => {
   const now = 100_000;

@@ -1,7 +1,7 @@
 "use client";
 import {useCallback,useEffect,useRef,useState} from "react";
 import {fbApp} from "./firebase";
-import {activateVoiceTrack,getNegotiatedVoiceTransceiver,getOrCreateVoicePeer,isStaleVoiceSignal,prepareVoiceAnswerTransceiver,removeRemoteVoiceStream,replaceVoiceTrack,replaceVoiceTracks,shouldInitiateVoiceOffer,shouldReplaceVoicePeer,upsertRemoteVoiceStream} from "./voiceMesh.cjs";
+import {activateVoiceTrack,getNegotiatedVoiceTransceiver,getOrCreateVoicePeer,isStaleVoiceSignal,prepareVoiceAnswerTransceiver,removeRemoteVoiceStream,replaceVoiceTrack,replaceVoiceTracks,serializeVoiceDescription,shouldInitiateVoiceOffer,shouldReplaceVoicePeer,upsertRemoteVoiceStream} from "./voiceMesh.cjs";
 
 const iceServers=()=>{
  const urls=(process.env.NEXT_PUBLIC_TURN_URLS||"").split(",").map(value=>value.trim()).filter(Boolean);
@@ -129,7 +129,7 @@ export function useVoiceRoom(code,selfId,members,backend,setPresence){
   if(initiator){
    const offer=await peer.createOffer();
    console.info("[voice-debug] offer-created",peerId);
-   await peer.setLocalDescription(offer);await sendSignal(peerId,{signalType:"offer",description:offer});
+   await peer.setLocalDescription(offer);await sendSignal(peerId,{signalType:"offer",description:serializeVoiceDescription(offer)});
   }
   updateMeshStatus();
   return peer;
@@ -171,7 +171,7 @@ export function useVoiceRoom(code,selfId,members,backend,setPresence){
    if(track&&transceiver)await replaceVoiceTrack(transceiver,track);
    const answer=await peer.createAnswer();
    console.info("[voice-debug] answer-created",message.from);
-   await peer.setLocalDescription(answer);await sendSignal(message.from,{signalType:"answer",description:answer});
+   await peer.setLocalDescription(answer);await sendSignal(message.from,{signalType:"answer",description:serializeVoiceDescription(answer)});
   }else if(message.signalType==="answer"){
    await peer.setRemoteDescription(message.description);
    const transceiver=getNegotiatedVoiceTransceiver(peer,transceiversRef.current.get(message.from));

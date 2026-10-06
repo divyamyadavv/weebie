@@ -16,6 +16,10 @@ function shouldReplaceVoicePeer(connectionState) {
     || connectionState === "disconnected";
 }
 
+function serializeVoiceDescription(description) {
+  return { type: description.type, sdp: description.sdp };
+}
+
 function getOrCreateVoicePeer(peers, peerId, createPeer) {
   if (peerId == null || peerId === "") return null;
   const existing = peers.get(peerId);
@@ -100,6 +104,7 @@ module.exports = {
   prepareVoiceAnswerTransceiver,
   replaceVoiceTrack,
   replaceVoiceTracks,
+  serializeVoiceDescription,
   shouldInitiateVoiceOffer,
   shouldReplaceVoicePeer,
   removeRemoteVoiceStream,
