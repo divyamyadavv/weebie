@@ -1,0 +1,50 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Install Firebase CLI",
+			"type": "shell",
+			"command": "npm.cmd",
+			"args": [
+				"install",
+				"--global",
+				"firebase-tools",
+				"--no-audit",
+				"--no-fund"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Check Firebase CLI version",
+			"type": "shell",
+			"command": "firebase",
+			"args": [
+				"--version"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Verify Firebase CLI",
+			"type": "shell",
+			"command": "firebase.cmd",
+			"args": [
+				"--version"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Firebase CLI login",
+			"type": "shell",
+			"command": "firebase.cmd",
+			"args": [
+				"login",
+				"--no-localhost"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+	]
+}

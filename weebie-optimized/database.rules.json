@@ -1,0 +1,96 @@
+{
+  "rules": {
+    "rooms": {
+      "$code": {
+        ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && data.child('members').child(auth.uid).exists() && data.child('members').child(auth.uid).child('kicked').val() !== true",
+        "meta": {
+          ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && root.child('rooms').child($code).child('members').child(auth.uid).exists() && !root.child('rooms').child($code).child('members').child(auth.uid).child('kicked').val()",
+          ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && ((!data.exists() && newData.child('originalOwnerId').val() === auth.uid && newData.child('adminId').val() === auth.uid) || (data.exists() && data.child('adminId').val() === auth.uid) || (data.exists() && data.child('originalOwnerId').val() === auth.uid && !data.child('voluntaryTransfer').val()))",
+          "nextJoinSequence": {
+            ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && root.child('rooms').child($code).child('members').child(auth.uid).exists() && !root.child('rooms').child($code).child('members').child(auth.uid).child('kicked').val()",
+            ".validate": "newData.isNumber() && newData.val() > data.val()"
+          },
+          ".validate": "newData.hasChildren(['name','adminId','originalOwnerId']) && newData.child('name').isString() && (newData.child('adminId').val() === null || (newData.child('adminId').isString() && root.child('rooms').child($code).child('members').child(newData.child('adminId').val()).exists() && !root.child('rooms').child($code).child('members').child(newData.child('adminId').val()).child('kicked').val())) && newData.child('originalOwnerId').isString() && (!data.exists() || newData.child('originalOwnerId').val() === data.child('originalOwnerId').val())"
+        },
+        "members": {
+          ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && root.child('rooms').child($code).child('members').child(auth.uid).exists() && !root.child('rooms').child($code).child('members').child(auth.uid).child('kicked').val()",
+          "$uid": {
+            ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && (auth.uid === $uid || (root.child('rooms').child($code).child('members').child(auth.uid).exists() && !root.child('rooms').child($code).child('members').child(auth.uid).child('kicked').val()))",
+            ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && ((auth.uid === $uid && !data.exists() && root.child('rooms').child($code).child('meta').exists() && !newData.child('kicked').val()) || (auth.uid === $uid && data.exists() && !data.child('kicked').val() && !newData.child('kicked').val()) || root.child('rooms').child($code).child('meta').child('adminId').val() === auth.uid)",
+            ".validate": "newData.hasChildren(['name','online','muted']) && newData.child('name').isString() && newData.child('online').isBoolean() && newData.child('muted').isBoolean()"
+          }
+        },
+        "playback": {
+          ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && root.child('rooms').child($code).child('members').child(auth.uid).exists() && !root.child('rooms').child($code).child('members').child(auth.uid).child('kicked').val()",
+          ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && root.child('rooms').child($code).child('members').child(auth.uid).exists() && !root.child('rooms').child($code).child('members').child(auth.uid).child('kicked').val() && root.child('rooms').child($code).child('meta').child('adminId').val() === auth.uid",
+          ".validate": "newData.hasChildren(['roomId','eventId','eventTimestamp','controllerId','eventType','playing','time']) && newData.child('roomId').val() === $code && newData.child('controllerId').val() === auth.uid && newData.child('eventId').isString() && newData.child('eventType').isString() && newData.child('playing').isBoolean() && newData.child('time').isNumber()"
+        },
+        "messages": {
+          ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && root.child('rooms').child($code).child('members').child(auth.uid).exists() && !root.child('rooms').child($code).child('members').child(auth.uid).child('kicked').val()",
+          "$message": {
+            ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && !data.exists() && root.child('rooms').child($code).child('members').child(auth.uid).exists() && !root.child('rooms').child($code).child('members').child(auth.uid).child('kicked').val() && newData.child('uid').val() === auth.uid",
+            ".validate": "newData.child('uid').isString() && ((newData.child('text').isString() && newData.child('text').val().length < 500) || newData.child('react').val() === true || newData.child('system').val() === true)"
+          }
+        },
+        "reports": {
+          "$report": {
+            ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && root.child('rooms').child($code).child('members').child(auth.uid).exists() && !data.exists() && newData.child('reporterId').val() === auth.uid",
+            ".validate": "newData.hasChildren(['reporterId','targetId','createdAt']) && newData.child('reporterId').isString() && newData.child('targetId').isString()"
+          }
+        },
+        "signals": {
+          ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && root.child('rooms').child($code).child('members').child(auth.uid).exists() && !root.child('rooms').child($code).child('members').child(auth.uid).child('kicked').val()",
+          "$uid": {
+            ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && root.child('rooms').child($code).child('members').child(auth.uid).exists() && !root.child('rooms').child($code).child('members').child(auth.uid).child('kicked').val() && ($uid === auth.uid || root.child('rooms').child($code).child('members').child($uid).exists())",
+            "$signal": {
+              ".validate": "newData.child('from').val() === auth.uid && newData.child('signalType').isString()"
+            }
+          }
+        }
+      }
+    },
+    "friendRequests": {
+      "$target": {
+        ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && auth.uid === $target",
+        "$from": {
+          ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && (auth.uid === $target || auth.uid === $from)",
+          ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && ((auth.uid === $from && !data.exists() && newData.child('status').val() === 'pending') || (auth.uid === $target && data.exists() && data.child('status').val() === 'pending' && newData.child('status').val() === 'declined'))",
+          ".validate": "newData.hasChildren(['from','to','status','createdAt']) && newData.child('from').val() === $from && newData.child('to').val() === $target && newData.child('name').isString() && (newData.child('status').val() === 'pending' || newData.child('status').val() === 'accepted' || newData.child('status').val() === 'declined')"
+        }
+      }
+    },
+    "users": {
+      "$uid": {
+        "profile": {
+          ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && auth.uid === $uid",
+          ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && auth.uid === $uid",
+          ".validate": "newData.child('name').isString()"
+        },
+        "friends": {
+          ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && auth.uid === $uid",
+          "$friend": {
+            ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && auth.uid === $uid",
+            ".validate": "newData.child('name').isString()"
+          }
+        },
+        "outgoingRequests": {
+          ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && auth.uid === $uid",
+          "$target": {
+            ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && auth.uid === $uid",
+            ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && ((auth.uid === $uid && !data.exists() && newData.child('status').val() === 'pending') || (auth.uid === $target && data.exists() && data.child('status').val() === 'pending' && newData.child('status').val() === 'declined'))",
+            ".validate": "newData.child('name').isString() && (newData.child('status').val() === 'pending' || newData.child('status').val() === 'accepted' || newData.child('status').val() === 'declined')"
+          }
+        }
+      }
+    },
+    "blocks": {
+      "$owner": {
+        ".read": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && auth.uid === $owner",
+        "$target": {
+          ".write": "auth != null && (auth.token.email_verified === true || auth.token.firebase.sign_in_provider === 'google.com') && auth.uid === $owner && newData.isBoolean()",
+          ".validate": "newData.val() === true"
+        }
+      }
+    }
+  }
+}

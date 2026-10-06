@@ -1,0 +1,36 @@
+const PLAYBACK_RATES=[0.5,0.75,1,1.25,1.5,1.75,2];
+
+function expectedPlaybackPosition(state,now){
+ const time=Number(state?.time)||0;
+ const playbackRate=PLAYBACK_RATES.includes(Number(state?.playbackRate))?Number(state.playbackRate):1;
+ const receivedAt=Number(state?.receivedAt);
+ const serverTimestamp=Number(state?.serverTimestamp),wallClockAtReceive=Number(state?.wallClockAtReceive);
+ const serverAge=state?.playing&&serverTimestamp>0&&wallClockAtReceive>0?Math.min(4,Math.max(0,(wallClockAtReceive-serverTimestamp)/1000))*playbackRate:0;
+ const elapsed=state?.playing&&Number.isFinite(receivedAt)?Math.max(0,(now-receivedAt)/1000)*playbackRate:0;
+ return Math.max(0,time+serverAge+elapsed);
+}
+
+function playbackCorrection(drift,eventType,lastSeekAt,now,playbackRate=1){
+ const magnitude=Math.abs(drift);
+ const rate=PLAYBACK_RATES.includes(Number(playbackRate))?Number(playbackRate):1;
+ if(eventType!=="progress"&&magnitude>0.65)return {seek:true,playbackRate:rate};
+ if(magnitude>=3&&now-lastSeekAt>=8000)return {seek:true,playbackRate:rate};
+ if(magnitude>=0.35)return {seek:false,playbackRate:rate*(drift>0?1.04:0.96)};
+ return {seek:false,playbackRate:rate};
+}
+
+function shouldApplyPlaybackState(state,viewerUid,initialized){
+ return !!state&&(state.controllerId!==viewerUid||!initialized);
+}
+
+// A rejoining admin starts with a fresh player at 0; restore the saved position once and block its time-0 events from overwriting the room.
+function adminPlaybackRestoreAction(state,{admin,restored}){
+ if(!state||!admin||restored)return "none";
+ return state.eventType==="admin-transfer"?"mark":"apply";
+}
+
+function isUnrestoredAdminReset(state,event,restored){
+ return !restored&&Number(state?.time)>1&&Number(event?.time)<1;
+}
+
+module.exports={PLAYBACK_RATES,expectedPlaybackPosition,playbackCorrection,shouldApplyPlaybackState,adminPlaybackRestoreAction,isUnrestoredAdminReset};

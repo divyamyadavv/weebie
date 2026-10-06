@@ -1,0 +1,60 @@
+"use client";
+import {useEffect,useRef,useState} from "react";
+import {fbApp} from "./firebase";
+
+const iceServers=()=>{
+ const urls=(process.env.NEXT_PUBLIC_TURN_URLS||"").split(",").map(value=>value.trim()).filter(Boolean);
+ const servers=[{urls:"stun:stun.l.google.com:19302"}];
+ if(urls.length)servers.push({urls,username:process.env.NEXT_PUBLIC_TURN_USERNAME,credential:process.env.NEXT_PUBLIC_TURN_CREDENTIAL});
+ return servers;
+};
+
+export function useVoiceRoom(code,selfId,members,backend,setPresence){
+ const [enabled,setEnabled]=useState(false),[muted,setMuted]=useState(true),[status,setStatus]=useState("disconnected"),[error,setError]=useState(""),[streams,setStreams]=useState([]),[speaking,setSpeaking]=useState(false),[heardBy,setHeardBy]=useState({});
+ const streamRef=useRef(),peersRef=useRef(new Map()),candidateRef=useRef(new Map()),seenRef=useRef(new Set()),signalRef=useRef(),channelRef=useRef(),analyserRef=useRef(),rafRef=useRef(),lastSpeakingRef=useRef(false);
+ const memberIds=members.map(member=>member.id).filter(id=>id&&id!==selfId);
+ useEffect(()=>()=>{streamRef.current?.getTracks().forEach(track=>track.stop());peersRef.current.forEach(peer=>peer.close());signalRef.current?.();channelRef.current?.close();cancelAnimationFrame(rafRef.current)},[]);
+ const sendSignal=async(target,payload)=>{
+    const message={id:crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`,from:selfId,to:target,...payload};
+  if(backend==="firebase"){
+   const D=await import("firebase/database"),app=await fbApp();await D.push(D.ref(D.getDatabase(app),`rooms/${code}/signals/${target}`),message);
+  }else if(backend==="firestore"){
+   const F=await import("firebase/firestore"),app=await fbApp(),db=F.getFirestore(app);await F.addDoc(F.collection(db,"rooms",code,"signals",target,"events"),message);
+  }else channelRef.current?.postMessage({type:"signal",...message});
+ };
+ const addPeer=async(peerId,initiator=false)=>{
+  if(!streamRef.current||peersRef.current.has(peerId))return peersRef.current.get(peerId);
+  const peer=new RTCPeerConnection({iceServers:iceServers()});peersRef.current.set(peerId,peer);
+  streamRef.current.getTracks().forEach(track=>peer.addTrack(track,streamRef.current));
+  peer.onicecandidate=event=>event.candidate&&sendSignal(peerId,{signalType:"candidate",candidate:event.candidate.toJSON()});
+  peer.ontrack=event=>setStreams(current=>current.some(item=>item.id===peerId)?current:[...current,{id:peerId,stream:event.streams[0]}]);
+    peer.onconnectionstatechange=()=>{if(peer.connectionState==="connected")setStatus("connected");if(peer.connectionState==="disconnected")setStatus("reconnecting");if(["failed","closed"].includes(peer.connectionState)){setStatus("disconnected");setStreams(current=>current.filter(item=>item.id!==peerId));}};
+  if(initiator){const offer=await peer.createOffer();await peer.setLocalDescription(offer);await sendSignal(peerId,{signalType:"offer",description:offer});}
+  return peer;
+ };
+ const handleSignal=async message=>{
+  if(message.to!==selfId||seenRef.current.has(message.id))return;seenRef.current.add(message.id);
+  if(message.signalType==="heard"){setHeardBy(current=>({...current,[message.from]:Date.now()}));return;}
+  const peer=await addPeer(message.from,false);if(!peer)return;
+  if(message.signalType==="offer"){await peer.setRemoteDescription(message.description);const answer=await peer.createAnswer();await peer.setLocalDescription(answer);await sendSignal(message.from,{signalType:"answer",description:answer});}
+  else if(message.signalType==="answer")await peer.setRemoteDescription(message.description);
+    else if(message.signalType==="candidate"){if(peer.remoteDescription)await peer.addIceCandidate(message.candidate);else{const queue=candidateRef.current.get(message.from)||[];queue.push(message.candidate);candidateRef.current.set(message.from,queue);}}
+    const queued=candidateRef.current.get(message.from)||[];if(peer.remoteDescription&&queued.length){for(const candidate of queued)await peer.addIceCandidate(candidate);candidateRef.current.delete(message.from);}
+ };
+ const start=async()=>{
+  if(!navigator.mediaDevices?.getUserMedia)return setError("This browser does not support microphone access.");
+  try{
+  setError("");setStatus("connecting");const stream=await navigator.mediaDevices.getUserMedia({audio:true});streamRef.current=stream;setEnabled(true);setMuted(false);setPresence?.({muted:false});
+    const AudioContext=window.AudioContext||window.webkitAudioContext;if(AudioContext){const context=new AudioContext(),source=context.createMediaStreamSource(stream),analyser=context.createAnalyser();source.connect(analyser);analyser.fftSize=512;analyserRef.current={context,analyser};const data=new Uint8Array(analyser.frequencyBinCount);const detect=()=>{analyser.getByteFrequencyData(data);const active=data.reduce((sum,value)=>sum+value,0)/data.length>12&&!stream.getAudioTracks()[0].muted;setSpeaking(active);if(active!==lastSpeakingRef.current){lastSpeakingRef.current=active;setPresence?.({speaking:active})}rafRef.current=requestAnimationFrame(detect)};detect();}
+  if(backend==="firebase"){const D=await import("firebase/database"),app=await fbApp(),ref=D.ref(D.getDatabase(app),`rooms/${code}/signals/${selfId}`);signalRef.current=D.onChildAdded(ref,snap=>{const value={...snap.val(),id:snap.key};handleSignal(value);D.remove(snap.ref)});}
+   else if(backend==="firestore"){const F=await import("firebase/firestore"),app=await fbApp(),db=F.getFirestore(app),ref=F.collection(db,"rooms",code,"signals",selfId,"events");signalRef.current=F.onSnapshot(ref,snapshot=>snapshot.docChanges().filter(change=>change.type==="added").forEach(change=>{const value={...change.doc.data(),id:change.doc.id};void handleSignal(value).catch(()=>{}).finally(()=>F.deleteDoc(change.doc.ref).catch(()=>{}))}));}
+    else{const channel=new BroadcastChannel("weebie-voice-"+code);channel.onmessage=event=>handleSignal(event.data);channelRef.current=channel;}
+   await Promise.all(memberIds.filter(peerId=>selfId<peerId).map(peerId=>addPeer(peerId,true)));setStatus("connected");
+  }catch(exception){setError(exception.name==="NotAllowedError"?"Microphone permission was denied. Allow microphone access and try again.":exception.message);setStatus("disconnected");setEnabled(false);}
+ };
+ const stop=()=>{streamRef.current?.getTracks().forEach(track=>track.stop());peersRef.current.forEach(peer=>peer.close());peersRef.current.clear();candidateRef.current.clear();setStreams([]);setHeardBy({});setEnabled(false);setMuted(true);setStatus("disconnected");lastSpeakingRef.current=false;setPresence?.({muted:true,speaking:false});signalRef.current?.();signalRef.current=null;channelRef.current?.close();channelRef.current=null;cancelAnimationFrame(rafRef.current)};
+ const toggleMute=()=>{const next=!muted;streamRef.current?.getAudioTracks().forEach(track=>{track.enabled=!next});setMuted(next);setPresence?.({muted:next});};
+ useEffect(()=>{if(!enabled)return;memberIds.filter(peerId=>selfId<peerId).forEach(peerId=>addPeer(peerId,true).catch(()=>{}));},[enabled,selfId,memberIds.join(",")]);
+ const confirmHear=target=>sendSignal(target,{signalType:"heard"});
+ return {enabled,muted,status,error,streams,speaking,heardBy,start,stop,toggleMute,confirmHear};
+}

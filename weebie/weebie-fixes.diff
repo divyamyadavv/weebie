@@ -1,0 +1,420 @@
+diff -ruN --strip-trailing-cr orig/weebie/weebie/firestore.rules /home/claude/weebie/weebie/firestore.rules
+--- orig/weebie/weebie/firestore.rules	2026-10-03 14:47:08.000000000 +0000
++++ /home/claude/weebie/weebie/firestore.rules	2026-10-03 16:23:03.463232970 +0000
+@@ -155,6 +155,7 @@
+           && request.resource.data.name is string
+           && request.resource.data.online == true
+           && request.resource.data.lastSeen == request.time
++          && request.resource.data.joinedAt == request.time
+           && request.resource.data.kicked == false;
+ 
+         allow update: if signedIn()
+@@ -164,6 +165,10 @@
+           && ((memberId == request.auth.uid
+               && resource.data.kicked != true
+               && request.resource.data.kicked == resource.data.kicked
++              && (!('joinedAt' in resource.data)
++                || request.resource.data.joinedAt == resource.data.joinedAt)
++              && (!('joinSequence' in resource.data)
++                || request.resource.data.joinSequence == resource.data.joinSequence)
+               && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'name', 'photoURL', 'online', 'muted', 'speaking', 'voiceStatus',
+                 'sessionId', 'joinSequence', 'joinedAt', 'lastSeen'
+diff -ruN --strip-trailing-cr orig/weebie/weebie/functions/roomLeadership.cjs /home/claude/weebie/weebie/functions/roomLeadership.cjs
+--- orig/weebie/weebie/functions/roomLeadership.cjs	2026-10-03 15:21:31.000000000 +0000
++++ /home/claude/weebie/weebie/functions/roomLeadership.cjs	2026-10-03 16:22:09.629376481 +0000
+@@ -1,5 +1,9 @@
+ const DEFAULT_LEASE_MS=75000;
+ const FUTURE_CLOCK_TOLERANCE_MS=30000;
++// Expired presence sessions are kept briefly (a sleeping laptop can resume), then deleted so the
++// collection - which every heartbeat transaction reads in full - cannot grow without bound.
++const SESSION_RETENTION_MS=15*60*1000;
++const MAX_SESSION_PRUNES_PER_RUN=25;
+ 
+ function timestampMillis(value){
+  if(typeof value?.toMillis==="function")return value.toMillis();
+@@ -26,15 +30,19 @@
+ }
+ 
+ function memberOrder(first,second){
++ // joinedAt is a server timestamp that the Firestore rules fix at creation and make immutable, so it
++ // is the trusted seniority key. joinSequence is client-written and is only a fallback for legacy
++ // members that have no joinedAt.
++ const firstJoinedAt=timestampMillis(first.member.joinedAt),secondJoinedAt=timestampMillis(second.member.joinedAt);
++ if(firstJoinedAt>0&&secondJoinedAt>0&&firstJoinedAt!==secondJoinedAt)return firstJoinedAt-secondJoinedAt;
+  const firstSequence=Number(first.member.joinSequence),secondSequence=Number(second.member.joinSequence);
+  const firstHasSequence=Number.isFinite(firstSequence)&&firstSequence>0,secondHasSequence=Number.isFinite(secondSequence)&&secondSequence>0;
+  if(firstHasSequence&&secondHasSequence&&firstSequence!==secondSequence)return firstSequence-secondSequence;
+  if(firstHasSequence!==secondHasSequence)return firstHasSequence?-1:1;
+- const joinedAt=timestampMillis(first.member.joinedAt)-timestampMillis(second.member.joinedAt);
+- return joinedAt||first.uid.localeCompare(second.uid);
++ return first.uid.localeCompare(second.uid);
+ }
+ 
+-async function reconcileRoomLeadership(db,roomId,{now=Date.now(),leaseMs=DEFAULT_LEASE_MS,leaveSession=null,heartbeatSession=null}={}){
++async function reconcileRoomLeadership(db,roomId,{now=Date.now(),leaseMs=DEFAULT_LEASE_MS,retentionMs=SESSION_RETENTION_MS,leaveSession=null,heartbeatSession=null}={}){
+  const roomRef=db.doc(`rooms/${roomId}`);
+  return db.runTransaction(async transaction=>{
+   const roomSnapshot=await transaction.get(roomRef);
+@@ -67,8 +75,20 @@
+     memberRepairs.push({uid:heartbeatSession.uid,online:true,lastSeen:new Date(now)});
+    }
+   }
++  let prunedSessions=0;
+   for(const [documentId,session] of sessions){
+-   if(session.online!==true||activeSession(session,now,leaseMs))continue;
++   if(activeSession(session,now,leaseMs))continue;
++   const lastSeen=timestampMillis(session.lastSeen);
++   // A session is only dead when it is expired AND long past the lease (or has no usable timestamp).
++   // A future-skewed timestamp is never treated as dead here.
++   if((lastSeen<=0||now-lastSeen>=retentionMs)&&prunedSessions<MAX_SESSION_PRUNES_PER_RUN){
++    transaction.delete(db.doc(`rooms/${roomId}/presenceSessions/${documentId}`));
++    sessions.delete(documentId);
++    prunedSessions++;
++    presenceRepaired=true;
++    continue;
++   }
++   if(session.online!==true)continue;
+    sessions.set(documentId,{...session,online:false});
+    transaction.update(db.doc(`rooms/${roomId}/presenceSessions/${documentId}`),{online:false});
+    presenceRepaired=true;
+@@ -132,4 +152,4 @@
+  });
+ }
+ 
+-module.exports={DEFAULT_LEASE_MS,reconcileRoomLeadership};
++module.exports={DEFAULT_LEASE_MS,SESSION_RETENTION_MS,reconcileRoomLeadership};
+diff -ruN --strip-trailing-cr orig/weebie/weebie/lib/firestoreRooms.js /home/claude/weebie/weebie/lib/firestoreRooms.js
+--- orig/weebie/weebie/lib/firestoreRooms.js	2026-10-03 15:45:18.000000000 +0000
++++ /home/claude/weebie/weebie/lib/firestoreRooms.js	2026-10-03 16:22:51.565862205 +0000
+@@ -2,6 +2,7 @@
+ import {currentUser} from "./auth";
+ import {activeRoomMemberUids,activeRoomMemberRecords,isPresenceSessionActive,needsRoomMemberReconciliation,replacementPresenceSession,roomMemberSnapshotRecord} from "./presenceSessions.cjs";
+ import {callFriendApi} from "./friendApiClient";
++import {classifyPresenceFailure,resolveRoomAdminId} from "./roomPresenceRecovery.cjs";
+ 
+ const roomCode=()=>globalThis.crypto?.randomUUID?.().replaceAll("-","").slice(0,12).toUpperCase()||Math.random().toString(36).slice(2,14).toUpperCase();
+ const displayName=user=>user.displayName||user.email?.split("@")[0]||"Member";
+@@ -120,6 +121,7 @@
+  const roomRef=F.doc(db,"rooms",code),memberRef=F.doc(roomRef,"members",user.uid),userRoomRef=F.doc(db,"users",user.uid,"rooms",code),sessionId=makeEventId();
+  const roomSessionRef=F.doc(roomRef,"presenceSessions",`${user.uid}_${sessionId}`);
+  let joined=false;
++ const runJoinTransaction=async()=>{
+  for(let attempt=0;attempt<3;attempt++){
+   try{
+    await F.runTransaction(db,async transaction=>{
+@@ -137,6 +139,8 @@
+    if(error?.code!=="failed-precondition"||attempt===2)throw error;
+   }
+  }
++ };
++ await runJoinTransaction();
+  await callFriendApi({operation:"roomJoined",roomId:code}).catch(error=>h.setErr(error.message||"Room invitations could not be refreshed."));
+  await F.setDoc(roomSessionRef,{uid:user.uid,online:true,lastSeen:F.serverTimestamp()});
+  let serverClockOffset=0;
+@@ -188,6 +192,24 @@
+   if(error?.code==="permission-denied"&&["members","presence","messages"].includes(source))scheduleActiveListenerRecovery();
+  };
+  const setPresenceError=error=>{if(error?.code!=="failed-precondition")setError(error)};
++ // A 409 means this tab's presence session no longer exists on the server (pagehide/bfcache restore,
++ // long sleep, or pruning) even though the tab is still open. Re-create the same session through the
++ // normal join transaction (which still rejects kicked users) instead of staying a ghost member.
++ let rejoinInFlight=null;
++ const recoverPresence=error=>{
++  if(closed)return;
++  if(classifyPresenceFailure(error)!=="rejoin"){setPresenceError(error);return}
++  if(rejoinInFlight)return rejoinInFlight;
++  rejoinInFlight=(async()=>{
++   try{
++    await runJoinTransaction();
++    if(closed){await syncServerPresence("leave").catch(()=>{});return}
++    await syncServerPresence("heartbeat");
++   }catch(rejoinError){if(!closed)setPresenceError(rejoinError)}
++   finally{rejoinInFlight=null}
++  })();
++  return rejoinInFlight;
++ };
+  const markActiveDataHealthy=source=>{
+   activeDataHealthy.add(source);
+   if(activeDataHealthy.size===3){
+@@ -233,8 +255,9 @@
+     activeDataHealthy.clear();
+     subscribeActiveDataListeners();
+   }catch(error){
+-   setPresenceError(error);
+-    retry=error?.status!==403&&error?.status!==409;
++   const action=classifyPresenceFailure(error);
++   if(action==="rejoin"){await recoverPresence(error);retry=!closed}
++   else{setPresenceError(error);retry=action==="retry"}
+   }finally{
+    listenerRecoveryInProgress=false;
+     if(retry)scheduleActiveListenerRecovery();
+@@ -245,7 +268,7 @@
+   h.setMembers(activeRoomMemberRecords(roomMembers,presenceSessions,now).map(member=>({...member,self:member.id===user.uid,admin:member.id===adminId})));
+   if(closed||presenceRepairInProgress||!roomMembers.some(member=>needsRoomMemberReconciliation(member,presenceSessions,now)))return;
+   presenceRepairInProgress=true;
+-  void syncServerPresence("heartbeat").catch(setPresenceError).finally(()=>{presenceRepairInProgress=false});
++  void Promise.resolve(syncServerPresence("heartbeat").catch(recoverPresence)).finally(()=>{presenceRepairInProgress=false});
+  };
+  const persistPlayback=state=>{
+   const wait=state.eventType==="progress"?4000-(Date.now()-lastPlaybackWrite):0;
+@@ -261,7 +284,7 @@
+  };
+  listeners.push(F.onSnapshot(roomRef,snapshot=>{
+   if(!snapshot.exists()){h.setLive(false);h.setMeta(null);h.setState(null);h.setErr("This room was deleted or is no longer available.");return}
+-  const data=snapshot.data();adminId=data.adminId||data.hostId;
++  const data=snapshot.data();adminId=resolveRoomAdminId(data);
+   h.setMeta({...data,adminId,originalOwnerId:data.originalOwnerId||data.hostId});
+   roomMembers=roomMembers.map(member=>({...member,admin:member.id===adminId}));
+   applyMemberPresence();
+@@ -301,16 +324,21 @@
+   try{await syncServerPresence("leave")}
+   catch(error){setPresenceError(error);await markOfflineClientFallback()}
+  };
+- const refreshPresence=()=>syncServerPresence("heartbeat").catch(setPresenceError);
++ const refreshPresence=()=>syncServerPresence("heartbeat").catch(recoverPresence);
+  const heartbeat=setInterval(refreshPresence,20000);
+  const onPageHide=()=>{void markOffline()};
+  const onPageShow=()=>refreshPresence();
+- if(typeof window!=="undefined"){window.addEventListener("pagehide",onPageHide);window.addEventListener("pageshow",onPageShow)}
++ // Hidden tabs are throttled by browsers; refresh the lease as soon as the tab is visible or the network is back.
++ const onVisibilityChange=()=>{if(typeof document!=="undefined"&&document.visibilityState==="visible")void refreshPresence()};
++ const onOnline=()=>{void refreshPresence()};
++ if(typeof window!=="undefined"){window.addEventListener("pagehide",onPageHide);window.addEventListener("pageshow",onPageShow);window.addEventListener("online",onOnline)}
++ if(typeof document!=="undefined")document.addEventListener("visibilitychange",onVisibilityChange);
+  const presenceExpiry=setInterval(applyMemberPresence,10000);
+ 
+  return {id:user.uid,backend:"firestore",off:()=>{
+     if(closed)return;closed=true;clearInterval(heartbeat);clearInterval(presenceExpiry);clearTimeout(playbackTimer);clearTimeout(listenerRetryTimer);pendingPlayback=null;listeners.forEach(unsubscribe=>unsubscribe());
+-  if(typeof window!=="undefined"){window.removeEventListener("pagehide",onPageHide);window.removeEventListener("pageshow",onPageShow)}
++  if(typeof window!=="undefined"){window.removeEventListener("pagehide",onPageHide);window.removeEventListener("pageshow",onPageShow);window.removeEventListener("online",onOnline)}
++  if(typeof document!=="undefined")document.removeEventListener("visibilitychange",onVisibilityChange);
+   void markOffline();
+  },
+   state:state=>{
+diff -ruN --strip-trailing-cr orig/weebie/weebie/lib/roomPresenceRecovery.cjs /home/claude/weebie/weebie/lib/roomPresenceRecovery.cjs
+--- orig/weebie/weebie/lib/roomPresenceRecovery.cjs	1970-01-01 00:00:00.000000000 +0000
++++ /home/claude/weebie/weebie/lib/roomPresenceRecovery.cjs	2026-10-03 16:22:27.749764782 +0000
+@@ -0,0 +1,24 @@
++// Pure helpers for client-side room presence recovery and admin resolution.
++
++// Decide what the client should do when the server rejects a presence heartbeat.
++//  - "rejoin":   the tab's presence session no longer exists (409). That happens after pagehide/bfcache
++//                restore, a long sleep, or server pruning. The tab is still open, so it must re-create its
++//                own session instead of silently staying a ghost.
++//  - "terminal": the account is not allowed in the room (403) or the room is gone (404). Never retry.
++//  - "retry":    transient failure (network, 5xx). Keep the normal retry cadence.
++function classifyPresenceFailure(error){
++ const status=Number(error?.status);
++ if(status===409)return "rejoin";
++ if(status===403||status===404)return "terminal";
++ return "retry";
++}
++
++// A room whose adminId is explicitly null has no active admin right now (everyone left). Only a legacy
++// document that has no adminId field at all may fall back to its original host.
++function resolveRoomAdminId(room){
++ if(!room||typeof room!=="object")return null;
++ if(Object.prototype.hasOwnProperty.call(room,"adminId"))return room.adminId||null;
++ return room.hostId||null;
++}
++
++module.exports={classifyPresenceFailure,resolveRoomAdminId};
+diff -ruN --strip-trailing-cr orig/weebie/weebie/tests/roomLeadershipHardening.test.cjs /home/claude/weebie/weebie/tests/roomLeadershipHardening.test.cjs
+--- orig/weebie/weebie/tests/roomLeadershipHardening.test.cjs	1970-01-01 00:00:00.000000000 +0000
++++ /home/claude/weebie/weebie/tests/roomLeadershipHardening.test.cjs	2026-10-03 16:21:55.575221626 +0000
+@@ -0,0 +1,140 @@
++const test=require("node:test");
++const assert=require("node:assert/strict");
++const {reconcileRoomLeadership}=require("../functions/roomLeadership.cjs");
++
++const now=1_700_000_000_000;
++const MINUTE=60_000;
++
++class MemoryFirestore{
++ constructor(){this.records=new Map();this.pending=Promise.resolve()}
++ doc(path){return {kind:"document",path,id:path.split("/").at(-1)}}
++ collection(path){return {kind:"collection",path}}
++ runTransaction(callback){
++  const run=async()=>{
++   const writes=[];
++   const transaction={
++    get:async ref=>{
++     if(ref.kind==="document"){
++      const value=this.records.get(ref.path);
++      return {exists:this.records.has(ref.path),id:ref.id,data:()=>value};
++     }
++     const docs=[...this.records.entries()]
++      .filter(([path])=>path.startsWith(`${ref.path}/`)&&!path.slice(ref.path.length+1).includes("/"))
++      .map(([path,value])=>({id:path.split("/").at(-1),data:()=>value}));
++     return {docs};
++    },
++    update:(ref,value)=>writes.push(()=>this.records.set(ref.path,{...this.records.get(ref.path),...value})),
++    delete:ref=>writes.push(()=>this.records.delete(ref.path))
++   };
++   const result=await callback(transaction);
++   writes.forEach(write=>write());
++   return result;
++  };
++  const result=this.pending.then(run);
++  this.pending=result.then(()=>{},()=>{});
++  return result;
++ }
++ set(path,value){this.records.set(path,value)}
++ has(path){return this.records.has(path)}
++ get(path){return this.records.get(path)}
++}
++
++function setup(){
++ const db=new MemoryFirestore(),roomId="HARD01";
++ db.set(`rooms/${roomId}`,{ownerUid:"owner",originalOwnerId:"owner",hostId:"owner",adminId:"owner",voluntaryTransfer:false,leadershipRevision:0});
++ const addMember=(uid,{joinSequence,joinedAt,sessionLastSeen=now}={})=>{
++  db.set(`rooms/${roomId}/members/${uid}`,{uid,joinSequence,joinedAt:joinedAt===undefined?undefined:new Date(joinedAt),online:true,sessionId:uid,lastSeen:new Date(sessionLastSeen),kicked:false});
++  db.set(`rooms/${roomId}/presenceSessions/${uid}_${uid}`,{uid,online:true,lastSeen:new Date(sessionLastSeen)});
++ };
++ return {db,roomId,addMember,room:()=>db.get(`rooms/${roomId}`)};
++}
++
++test("presence sessions that expired long ago are deleted instead of accumulating forever",async()=>{
++ const {db,roomId,addMember}=setup();
++ addMember("owner",{joinSequence:1,joinedAt:now-10*MINUTE});
++ addMember("guest",{joinSequence:2,joinedAt:now-9*MINUTE});
++ // Abruptly closed tabs: never sent "leave", so only expired docs remain.
++ for(let index=0;index<5;index++)db.set(`rooms/${roomId}/presenceSessions/guest_dead${index}`,{uid:"guest",online:true,lastSeen:new Date(now-30*MINUTE)});
++ db.set(`rooms/${roomId}/presenceSessions/guest_off`,{uid:"guest",online:false,lastSeen:new Date(now-20*MINUTE)});
++ await reconcileRoomLeadership(db,roomId,{now});
++ for(let index=0;index<5;index++)assert.equal(db.has(`rooms/${roomId}/presenceSessions/guest_dead${index}`),false);
++ assert.equal(db.has(`rooms/${roomId}/presenceSessions/guest_off`),false);
++ assert.equal(db.has(`rooms/${roomId}/presenceSessions/owner_owner`),true,"live session must survive");
++ assert.equal(db.has(`rooms/${roomId}/presenceSessions/guest_guest`),true,"live session must survive");
++});
++
++test("a recently expired session is kept (marked offline) so a briefly sleeping tab can resume",async()=>{
++ const {db,roomId,addMember}=setup();
++ addMember("owner",{joinSequence:1,joinedAt:now-10*MINUTE});
++ db.set(`rooms/${roomId}/presenceSessions/owner_sleeper`,{uid:"owner",online:true,lastSeen:new Date(now-3*MINUTE)});
++ await reconcileRoomLeadership(db,roomId,{now});
++ assert.equal(db.get(`rooms/${roomId}/presenceSessions/owner_sleeper`)?.online,false);
++});
++
++test("pruning never removes a session that just heartbeated, even if it had been dormant",async()=>{
++ const {db,roomId,addMember}=setup();
++ addMember("owner",{joinSequence:1,joinedAt:now-60*MINUTE,sessionLastSeen:now-40*MINUTE});
++ const result=await reconcileRoomLeadership(db,roomId,{now,heartbeatSession:{uid:"owner",expectedUid:"owner",sessionId:"owner"}});
++ assert.equal(db.has(`rooms/${roomId}/presenceSessions/owner_owner`),true);
++ assert.equal(db.get(`rooms/${roomId}/presenceSessions/owner_owner`).online,true);
++ assert.equal(result.adminId,"owner");
++});
++
++test("succession follows server-trusted joinedAt even if a client wrote a smaller joinSequence",async()=>{
++ const {db,roomId,addMember,room}=setup();
++ db.set(`rooms/${roomId}`,{...room(),adminId:"owner"});
++ addMember("honest",{joinSequence:1_700_000_000_500,joinedAt:now-5*MINUTE});
++ addMember("cheater",{joinSequence:2,joinedAt:now-1*MINUTE}); // forged tiny sequence, joined later
++ // Owner is simply absent (no session) -> succession decides.
++ db.records.delete(`rooms/${roomId}/presenceSessions/owner_owner`);
++ await reconcileRoomLeadership(db,roomId,{now});
++ assert.equal(room().adminId,"honest");
++});
++
++test("members without joinedAt still fall back to joinSequence ordering",async()=>{
++ const {db,roomId,addMember,room}=setup();
++ addMember("late",{joinSequence:30});
++ addMember("early",{joinSequence:10});
++ await reconcileRoomLeadership(db,roomId,{now,leaveSession:{uid:"owner",expectedUid:"owner",sessionId:"owner"}});
++ assert.equal(room().adminId,"early");
++});
++
++test("admin and the next-in-line leaving at the same moment hand admin to the remaining member exactly once",async()=>{
++ const {db,roomId,addMember,room}=setup();
++ addMember("owner",{joinSequence:1,joinedAt:now-10*MINUTE});
++ addMember("second",{joinSequence:2,joinedAt:now-9*MINUTE});
++ addMember("third",{joinSequence:3,joinedAt:now-8*MINUTE});
++ const results=await Promise.all([
++  reconcileRoomLeadership(db,roomId,{now,leaveSession:{uid:"owner",expectedUid:"owner",sessionId:"owner"}}),
++  reconcileRoomLeadership(db,roomId,{now,leaveSession:{uid:"second",expectedUid:"second",sessionId:"second"}})
++ ]);
++ assert.equal(room().adminId,"third");
++ assert.deepEqual(results.map(result=>result.adminId).filter(Boolean).every(id=>["second","third"].includes(id)),true);
++ assert.equal(db.get(`rooms/${roomId}/members/owner`).online,false);
++ assert.equal(db.get(`rooms/${roomId}/members/second`).online,false);
++ assert.equal(db.get(`rooms/${roomId}/members/third`).online,true);
++});
++
++test("two non-admin members leaving together leave the admin untouched",async()=>{
++ const {db,roomId,addMember,room}=setup();
++ addMember("owner",{joinSequence:1,joinedAt:now-10*MINUTE});
++ addMember("a",{joinSequence:2,joinedAt:now-9*MINUTE});
++ addMember("b",{joinSequence:3,joinedAt:now-8*MINUTE});
++ await Promise.all([
++  reconcileRoomLeadership(db,roomId,{now,leaveSession:{uid:"a",expectedUid:"a",sessionId:"a"}}),
++  reconcileRoomLeadership(db,roomId,{now,leaveSession:{uid:"b",expectedUid:"b",sessionId:"b"}})
++ ]);
++ assert.equal(room().adminId,"owner");
++ assert.equal(db.get(`rooms/${roomId}/members/owner`).online,true);
++});
++
++test("abrupt admin disconnect: remaining member's heartbeat after lease expiry promotes exactly one successor",async()=>{
++ const {db,roomId,addMember,room}=setup();
++ addMember("owner",{joinSequence:1,joinedAt:now-10*MINUTE,sessionLastSeen:now-100_000}); // lease long expired, no leave sent
++ addMember("second",{joinSequence:2,joinedAt:now-9*MINUTE,sessionLastSeen:now-5_000});
++ addMember("third",{joinSequence:3,joinedAt:now-8*MINUTE,sessionLastSeen:now-5_000});
++ const result=await reconcileRoomLeadership(db,roomId,{now,heartbeatSession:{uid:"third",expectedUid:"third",sessionId:"third"}});
++ assert.equal(result.adminId,"second");
++ assert.equal(room().adminId,"second");
++ assert.equal(db.get(`rooms/${roomId}/members/owner`).online,false);
++});
+diff -ruN --strip-trailing-cr orig/weebie/weebie/tests/roomPresenceRecovery.test.cjs /home/claude/weebie/weebie/tests/roomPresenceRecovery.test.cjs
+--- orig/weebie/weebie/tests/roomPresenceRecovery.test.cjs	1970-01-01 00:00:00.000000000 +0000
++++ /home/claude/weebie/weebie/tests/roomPresenceRecovery.test.cjs	2026-10-03 16:22:27.751200517 +0000
+@@ -0,0 +1,50 @@
++const test=require("node:test");
++const assert=require("node:assert/strict");
++const fs=require("node:fs");
++const path=require("node:path");
++const {classifyPresenceFailure,resolveRoomAdminId}=require("../lib/roomPresenceRecovery.cjs");
++
++test("a lost presence session (409) triggers a rejoin instead of leaving a ghost tab",()=>{
++ assert.equal(classifyPresenceFailure(Object.assign(new Error("gone"),{status:409})),"rejoin");
++});
++
++test("kicked/forbidden (403) and missing room (404) are terminal and never retried",()=>{
++ assert.equal(classifyPresenceFailure(Object.assign(new Error("no"),{status:403})),"terminal");
++ assert.equal(classifyPresenceFailure(Object.assign(new Error("no"),{status:404})),"terminal");
++});
++
++test("network and server errors keep the normal retry behaviour",()=>{
++ assert.equal(classifyPresenceFailure(new Error("Failed to fetch")),"retry");
++ assert.equal(classifyPresenceFailure(Object.assign(new Error("boom"),{status:500})),"retry");
++ assert.equal(classifyPresenceFailure(null),"retry");
++});
++
++test("an explicitly null adminId means no admin; it never falls back to the original host",()=>{
++ assert.equal(resolveRoomAdminId({adminId:null,hostId:"host"}),null);
++ assert.equal(resolveRoomAdminId({adminId:"member",hostId:"host"}),"member");
++});
++
++test("legacy rooms without an adminId field still resolve to their host",()=>{
++ assert.equal(resolveRoomAdminId({hostId:"host"}),"host");
++ assert.equal(resolveRoomAdminId(null),null);
++});
++
++const source=fs.readFileSync(path.join(__dirname,"../lib/firestoreRooms.js"),"utf8");
++
++test("heartbeat failures route through presence recovery (rejoin) rather than only showing an error",()=>{
++ assert.match(source,/classifyPresenceFailure/);
++ assert.match(source,/const refreshPresence=\(\)=>syncServerPresence\("heartbeat"\)\.catch\(recoverPresence\)/);
++ assert.match(source,/applyMemberPresence[\s\S]*?syncServerPresence\("heartbeat"\)\.catch\(recoverPresence\)/);
++});
++
++test("the room listener resolves admin through resolveRoomAdminId, not a hostId fallback",()=>{
++ assert.match(source,/adminId=resolveRoomAdminId\(data\)/);
++ assert.doesNotMatch(source,/adminId=data\.adminId\|\|data\.hostId/);
++});
++
++test("visibility, network and bfcache restores refresh presence, and every listener is removed on off()",()=>{
++ for(const event of ["visibilitychange","online","pageshow","pagehide"]){
++  assert.match(source,new RegExp(`addEventListener\\("${event}"`));
++  assert.match(source,new RegExp(`removeEventListener\\("${event}"`));
++ }
++});

@@ -1,0 +1,118 @@
+"use client";
+import Link from "next/link";import {useEffect,useRef,useState} from "react";
+import {useRouter} from "next/navigation";
+import {Copy,Check,LogOut,Send,RefreshCw,HardDrive,Crown,Settings,ShieldCheck,Mic,MicOff,Maximize2,BellOff,Bell,UsersRound} from "lucide-react";
+import Logo from "../../../components/Logo";import {Avatar} from "../../../components/ui";import Player from "../../../components/Player";import VoiceChat from "../../../components/VoiceChat";import MemberActions from "../../../components/MemberActions";import RoomFriendInvites from "../../../components/RoomFriendInvites";
+import RoomChat from "../../../components/RoomChat";
+import DrivePicker from "../../../components/DrivePicker";
+import {useAuth} from "../../../components/AuthProvider";import {useRoom} from "../../../lib/realtime";import {ytId} from "../../../lib/youtube";
+import {useFriends} from "../../../lib/friends";
+import {shouldApplyPlaybackState,adminPlaybackRestoreAction,isUnrestoredAdminReset} from "../../../lib/playbackSync.cjs";
+import driveOAuthErrors from "../../../lib/driveOAuthErrors.cjs";
+import {KICKED_ROOM_MESSAGE} from "../../../lib/roomAccess.cjs";
+const EM=["❤️","😂","😮","😢","👏","🔥"],EMPTY_ROOM={};
+export default function Room({params}){
+ const code=params.code.toUpperCase(),router=useRouter(),{user,loading:authLoading,requiresVerification,serverSessionReady,serverSessionError}=useAuth(),me=user&&!requiresVerification?user.displayName||user.email?.split("@")[0]||"":"",[drivePickerOpen,setDrivePickerOpen]=useState(false),[inviteFriendsOpen,setInviteFriendsOpen]=useState(false),[copied,setCopied]=useState(""),[yurl,setYurl]=useState(""),[err,setErr]=useState(""),[fl,setFl]=useState([]),[settings,setSettings]=useState(false),[autoplay,setAutoplay]=useState(false),[selectedMember,setSelectedMember]=useState(null),[chatAlerts,setChatAlerts]=useState([]),[chatMuted,setChatMuted]=useState(false),[fullScreen,setFullScreen]=useState(false),[toast,setToast]=useState("");
+ const [reactionPickerOpen,setReactionPickerOpen]=useState(false),[voiceMiniSlot,setVoiceMiniSlot]=useState(null);
+ const [roomAccess,setRoomAccess]=useState({key:"",status:"checking",error:""}),[accessRetry,setAccessRetry]=useState(0),accessKey=`${user?.uid||""}:${code}`,roomUser=roomAccess.key===accessKey&&roomAccess.status==="allowed"?me:"";
+ const videoShell=useRef(),pressTimer=useRef(),chatSeen=useRef(new Set()),chatReady=useRef(false),lastChatMessageKey=useRef(null),R=useRoom(code,roomUser,e=>{const key=Math.random();setFl(f=>[...f,{key,e,left:12+Math.random()*72,bottom:70+Math.random()*80}]);setTimeout(()=>setFl(f=>f.filter(item=>item.key!==key)),1700)},EMPTY_ROOM),friendApi=useFriends(),api=useRef(),end=useRef(),{state,meta,id}=R;
+ const roomLeave=useRef(R.leave);roomLeave.current=R.leave;
+ const [isBuffering,setIsBuffering]=useState(false),playbackInitialized=useRef(false),adminRestored=useRef(false);
+ const playbackSource=state?.source||meta?.source||null,roomSource=meta?.source,src=playbackSource&&roomSource?.fileId===playbackSource.fileId?{...playbackSource,...roomSource}:playbackSource,removed=R.moderation.kicked||R.moderation.blocked,admin=R.isAdmin&&!removed,driveAllowed=admin&&user?.uid===(meta?.originalOwnerId||meta?.hostId);
+ const adminName=R.members.find(member=>member.id===(meta?.adminId||meta?.hostId))?.name||(user?.uid===(meta?.adminId||meta?.hostId)?user?.displayName||user?.email?.split("@")[0]:null);
+ const showPausedOverlay=!!src&&!!adminName&&!admin&&!state?.playing&&!isBuffering&&(state?.eventType==="pause"||state?.eventType==="seeked");
+ useEffect(()=>{if(!authLoading&&!user)router.replace(`/login?next=${encodeURIComponent(`/room/${code}`)}`);else if(!authLoading&&user&&requiresVerification)router.replace(`/verify-email?next=${encodeURIComponent(`/room/${code}`)}`)},[code,router,authLoading,user,requiresVerification]);
+ useEffect(()=>{if(!admin)adminRestored.current=false},[admin]);
+ useEffect(()=>{
+  if(authLoading||!user||requiresVerification)return;
+  let cancelled=false;
+  setRoomAccess({key:accessKey,status:"checking",error:""});
+  void (async()=>{
+   try{
+    const token=await user.getIdToken();
+    const response=await fetch(`/api/rooms/${encodeURIComponent(code)}/access`,{method:"POST",headers:{Authorization:`Bearer ${token}`},cache:"no-store"});
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok){
+     if(result.code==="ROOM_KICKED"){
+      window.sessionStorage.setItem("weebie-room-access-notice",result.error||KICKED_ROOM_MESSAGE);
+      if(!cancelled)router.replace("/rooms");
+      return;
+     }
+     throw new Error(result.error||"Could not verify access to this room.");
+    }
+    if(!cancelled)setRoomAccess({key:accessKey,status:"allowed",error:""});
+   }catch(exception){if(!cancelled)setRoomAccess({key:accessKey,status:"error",error:exception.message||"Could not verify access to this room."})}
+  })();
+  return()=>{cancelled=true};
+ },[accessKey,authLoading,code,requiresVerification,router,user,accessRetry]);
+ useEffect(()=>{if(!serverSessionReady||!user)return;const current=new URL(window.location.href),result=current.searchParams.get("drive");if(result==="connected"&&driveAllowed)setDrivePickerOpen(true);else if(result==="setup")setErr(driveOAuthErrors.driveOAuthErrorMessage("setup"));else if(result==="error")setErr(driveOAuthErrors.driveOAuthErrorMessage(current.searchParams.get("driveError")));if(result){current.searchParams.delete("drive");current.searchParams.delete("driveError");window.history.replaceState(null,"",`${current.pathname}${current.search}${current.hash}`)}},[serverSessionReady,user,driveAllowed]);
+ useEffect(()=>{if(admin&&R.live&&id&&!state&&src)R.pushState({source:src,playing:false,time:0,eventType:"source"})},[admin,R.live,id,state,src]);
+ useEffect(()=>{if(!state){playbackInitialized.current=false;return}if(admin){const action=adminPlaybackRestoreAction(state,{admin,restored:adminRestored.current});if(action==="apply"&&api.current){api.current.apply(state);adminRestored.current=true}else if(action==="mark")adminRestored.current=true;return}if(state.eventType==="admin-transfer")return;if(shouldApplyPlaybackState(state,id,playbackInitialized.current)){const applied=api.current?.apply(state);if(applied&&state.controllerId===id)playbackInitialized.current=true}},[state,id,admin]);
+ useEffect(()=>{if(!R.moderation.kicked&&!R.moderation.blocked)return;R.leave();if(R.moderation.kicked)router.replace("/dashboard")},[R.moderation.kicked,R.moderation.blocked,router]);
+ useEffect(()=>{if(R.err!=="You were removed from this room and cannot rejoin with this invite.")return;roomLeave.current();window.sessionStorage.setItem("weebie-room-access-notice",KICKED_ROOM_MESSAGE);router.replace("/rooms")},[R.err,router]);
+ useEffect(()=>{const latest=R.msgs[R.msgs.length-1],key=latest?(latest.eventId||`${latest.uid}-${latest.t}-${latest.text}`):null;if(!chatReady.current){lastChatMessageKey.current=key;return}if(!key||key===lastChatMessageKey.current)return;lastChatMessageKey.current=key;const chatBox=end.current?.parentElement;chatBox?.scrollTo({top:chatBox.scrollHeight,behavior:"smooth"})},[R.msgs]);
+ useEffect(()=>{if(!R.msgs.length)return;if(!chatReady.current){R.msgs.forEach(message=>chatSeen.current.add(message.eventId||`${message.uid}-${message.t}-${message.text}`));chatReady.current=true;return}const latest=R.msgs[R.msgs.length-1],key=latest.eventId||`${latest.uid}-${latest.t}-${latest.text}`;if(latest.system||latest.react||latest.uid===id||chatSeen.current.has(key))return;chatSeen.current.add(key);if(chatMuted)return;setChatAlerts(alerts=>[...alerts.slice(-2),latest]);setTimeout(()=>setChatAlerts(alerts=>alerts.filter(message=>message!==latest)),4200)},[R.msgs,id,chatMuted]);
+ useEffect(()=>{const syncFullScreen=()=>{const active=document.fullscreenElement===videoShell.current;setFullScreen(active);if(!active)screen.orientation?.unlock?.()};document.addEventListener("fullscreenchange",syncFullScreen);return()=>document.removeEventListener("fullscreenchange",syncFullScreen)},[]);
+ useEffect(()=>{if(!fullScreen)setReactionPickerOpen(false)},[fullScreen]);
+ const copy=(value,key)=>{navigator.clipboard?.writeText(value);setCopied(key);setTimeout(()=>setCopied(""),1500)};
+ const local=event=>{if(!admin)return;const eventType=event.eventType||"playback";if(isUnrestoredAdminReset(state,event,adminRestored.current)){if(api.current){api.current.apply(state);adminRestored.current=true}return}R.pushState({source:src,playing:event.playing,time:event.time,playbackRate:Number(event.playbackRate)||Number(state?.playbackRate)||1,eventType})};
+ const markPlaybackApplied=appliedState=>{if(appliedState?.controllerId===id)playbackInitialized.current=true};
+ const changePlaybackRate=event=>{if(admin)R.pushState({source:src,playing:event.playing,time:event.time,playbackRate:event.playbackRate,eventType:event.eventType||"speed"})};
+ const prepareRoomQualities=async()=>{if(!admin||!src||src.type!=="drive")return;try{setErr("");const response=await fetch("/api/drive/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({roomCode:code}),cache:"no-store"});const data=await response.json();if(!response.ok)throw new Error(data.error||"Quality preparation failed.");setErr(data.warnings?.join(" ")||"Quality preparation completed.");}catch(error){setErr(error.message||"Quality preparation failed.")}};
+ const setYT=event=>{event.preventDefault();if(!admin)return;const videoId=ytId(yurl);if(!videoId)return setErr("That isn't a valid YouTube link.");setErr("");setYurl("");setSettings(false);R.pushState({source:{type:"yt",id:videoId,url:yurl.trim()},playing:false,time:0,playbackRate:1,eventType:"source"})};
+ const drive=()=>{if(driveAllowed){setErr("");setDrivePickerOpen(true)}};
+ const selectRoomVideo=video=>{if(!admin)return;setErr("");setSettings(false);R.pushState({source:{type:"drive",...video,qualityStatus:video?.qualityStatus||"not-prepared",qualities:Array.isArray(video?.qualities)?video.qualities:[]},playing:false,time:0,playbackRate:1,eventType:"source"})};
+ const streamUrl=src?.type==="drive"&&serverSessionReady&&!serverSessionError?`/api/rooms/${code}/video`:"";
+ const playerError=message=>{setErr(message);if(src?.type!=="drive"||!streamUrl)return;void fetch(streamUrl,{headers:{Range:"bytes=0-0"},cache:"no-store"}).then(async response=>{if(response.ok){await response.body?.cancel();return}const data=await response.json().catch(()=>({}));setErr(data.error||message)}).catch(()=>{})};
+ const transfer=async memberId=>{if(!admin||!window.confirm("Transfer admin control to this member? You will lose playback and source controls."))return;try{setErr("");await R.transferAdmin(memberId);setToast("Admin control transferred.")}catch(exception){setErr(exception?.message||"Admin transfer failed.")}setTimeout(()=>setToast(""),2600)};
+ const memberAction=async(member,action)=>{if(action==="leadership")return transfer(member.id);if(action==="profile")return setToast(`${member.name} is a ${member.admin?"room admin":"room member"}.`);try{if(action==="friend"){const result=await friendApi.sendRequest(member.id,member.name);setToast(result==="accepted"?`${member.name} is now your friend.`:`Friend request sent to ${member.name}.`)}else if(action==="block"){await R.moderate(member.id,action,member.name);setToast(`${member.name} is blocked for you.`)}else{await R.moderate(member.id,action,member.name);setToast(`${action==="report"?"Report submitted for":"Updated"} ${member.name}.`)}}catch(exception){setErr(exception.message)}setTimeout(()=>setToast(""),2600)};
+ const openMember=member=>{if(member.id!==id)setSelectedMember(member)};
+ const startPress=member=>{if(member.id===id)return;clearTimeout(pressTimer.current);pressTimer.current=setTimeout(()=>openMember(member),550)};
+ const stopPress=()=>clearTimeout(pressTimer.current);
+ const toggleFullScreen=async()=>{if(document.fullscreenElement===videoShell.current)await document.exitFullscreen?.();else{await videoShell.current?.requestFullscreen?.();try{await screen.orientation?.lock?.("landscape")}catch{}}};
+ const link=typeof window!=="undefined"?`${location.origin}/room/${code}`:"";
+ const syncLabel=!R.live?"Offline":R.backend==="firestore"||R.backend==="firebase"?"Live sync":"Demo sync";
+ if(authLoading||!user||requiresVerification)return <div className="grid min-h-screen place-items-center text-sm text-slate-400">{requiresVerification?"Verify your email to continue...":"Checking your account..."}</div>;
+ if(roomAccess.key!==accessKey||roomAccess.status==="checking")return <div className="grid min-h-screen place-items-center text-sm text-slate-400">Checking room access…</div>;
+ if(roomAccess.status!=="allowed")return <div className="grid min-h-screen place-items-center p-4"><div role="alert" className="card max-w-md space-y-3 p-5 text-sm"><p className="text-amber-200">{roomAccess.error||"Could not verify access to this room."}</p><button type="button" onClick={()=>setAccessRetry(value=>value+1)} className="btn2">Try again</button><button type="button" onClick={()=>router.replace("/rooms")} className="btn">Back to My Rooms</button></div></div>;
+ return <div className="flex min-h-screen flex-col">
+  <header className="flex flex-col gap-2 border-b border-white/10 p-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3 sm:pr-28">
+   <div className="flex items-center pr-28 sm:contents sm:pr-0"><Logo size="text-lg"/></div>
+   <b className="pr-28 text-sm sm:pr-0">{meta?.name||"Room"}</b>
+   <div className="flex flex-wrap items-center gap-2 pr-28 text-xs sm:contents sm:pr-0">
+    <button onClick={()=>copy(code,"c")} className="flex h-9 shrink-0 items-center gap-1 rounded-lg bg-white/5 px-2 text-xs whitespace-nowrap sm:h-auto sm:py-1">{code}{copied==="c"?<Check size={12}/>:<Copy size={12}/>}</button>
+    <span className={`flex h-9 shrink-0 items-center gap-1 rounded-lg px-2 text-xs whitespace-nowrap sm:h-auto sm:py-1 ${R.live?"bg-emerald-500/20 text-emerald-300":"bg-red-500/20 text-red-300"}`}><RefreshCw size={12}/>{syncLabel}</span>
+    {admin&&<button onClick={()=>setSettings(value=>!value)} className="btn2 h-9 shrink-0 !py-0 text-xs whitespace-nowrap sm:h-auto sm:!py-1.5"><Settings size={14}/>Room settings</button>}
+   </div>
+   <div className="flex w-full items-center justify-between gap-2 pr-28 sm:ml-auto sm:w-auto sm:pr-0">
+    <button type="button" onClick={()=>setInviteFriendsOpen(true)} className="btn2 h-9 w-9 shrink-0 justify-center !p-0 text-xs whitespace-nowrap sm:h-auto sm:w-auto sm:!px-3 sm:!py-1.5" aria-label="Invite friends to this room"><UsersRound size={15}/><span className="hidden sm:inline">Invite friends</span></button>
+    <button onClick={()=>copy(link,"l")} className="btn2 h-9 shrink-0 !px-2 !py-0 text-xs whitespace-nowrap sm:h-auto sm:!px-3 sm:!py-1.5">{copied==="l"?"Copied!":"Copy Invite Link"}</button>
+    <Link href="/rooms" className="flex h-9 shrink-0 items-center justify-center gap-1 rounded-xl bg-red-600 px-3 text-xs font-semibold whitespace-nowrap sm:h-auto sm:py-1.5 sm:text-sm"><LogOut size={14}/>Leave</Link>
+   </div>
+  </header>
+  {settings&&admin&&<div className="border-b border-white/10 bg-panel/60 p-3"><div className="mx-auto flex max-w-5xl flex-wrap items-center gap-2"><ShieldCheck size={16} className="text-violet-300"/><b className="text-sm">Admin video controls</b><form onSubmit={setYT} className="flex min-w-[240px] flex-1 gap-2"><input className="input !py-2" placeholder="Paste YouTube link" value={yurl} onChange={event=>setYurl(event.target.value)}/><button className="btn !py-2">Use</button></form>{driveAllowed&&<button onClick={drive} className="btn2 !py-2"><HardDrive size={16}/>Google Drive</button>}</div></div>}
+  {(R.err||err||serverSessionError||autoplay||toast||removed)&&<div className="m-3 flex items-center gap-2 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-300"><span>{removed?"You were removed from this room by the Admin.":R.err||err||serverSessionError||toast||"Playback is waiting for a browser interaction."}</span>{autoplay&&!removed&&<button onClick={()=>{api.current?.enable();setAutoplay(false)}} className="btn2 !py-1">Enable playback</button>}</div>}
+  <div className="grid flex-1 gap-4 p-3 lg:grid-cols-[1fr_340px]"><div>
+  <div ref={videoShell} className="relative aspect-video overflow-hidden rounded-2xl border border-white/10 bg-black [&:fullscreen]:aspect-auto [&:fullscreen]:rounded-none [&:fullscreen]:border-0">
+   <Player key={src?.type==="drive"?`${code}:${src.fileId}`:src?.id||src?.url||src?.type} source={removed?null:src} url={src?.type==="drive"?streamUrl:""} playbackRate={Number(state?.playbackRate)||1} onPlaybackRateChange={changePlaybackRate} onPlaybackApplied={markPlaybackApplied} onBuffering={setIsBuffering} onEvent={local} onError={playerError} onAutoplayBlocked={()=>setAutoplay(true)} apiRef={api} canControl={admin}/>
+   {showPausedOverlay&&<div role="status" className="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-black/40"><div className="rounded-xl border border-white/15 bg-black/75 px-5 py-3 text-center text-sm font-semibold text-white shadow-xl backdrop-blur"><span className="block text-xs font-medium text-violet-200">Paused by</span><span>{adminName}</span></div></div>}
+   <div className="pointer-events-none absolute inset-0 overflow-hidden">{fl.map(item=><span key={item.key} className="reaction-float absolute text-3xl" style={{left:`${item.left}%`,bottom:item.bottom}}>{item.e}</span>)}</div>
+   {fullScreen&&<div className="absolute right-14 top-3 z-30 flex items-start gap-2">
+    <div className="relative">
+     <button type="button" onClick={()=>setReactionPickerOpen(value=>!value)} aria-label="Open reactions" aria-expanded={reactionPickerOpen} className="grid h-10 w-10 place-items-center rounded-lg border border-white/15 bg-black/75 text-xl text-white shadow-lg hover:bg-violet-950">😊</button>
+     {reactionPickerOpen&&<div className="absolute right-0 top-12 flex gap-1 rounded-xl border border-white/15 bg-black/90 p-2 shadow-xl">{EM.map(reaction=><button type="button" key={reaction} disabled={removed} onClick={()=>{if(!removed)R.react(reaction);setReactionPickerOpen(false)}} aria-label={`React ${reaction}`} className="rounded-md p-1 text-xl hover:bg-white/10 disabled:opacity-40">{reaction}</button>)}</div>}
+    </div>
+    <div ref={setVoiceMiniSlot}/>
+   </div>}
+   <div className="absolute bottom-3 left-3 z-20 flex gap-2"><button onClick={toggleFullScreen} className="pointer-events-auto rounded-lg bg-black/60 p-2 text-white backdrop-blur" aria-label={fullScreen?"Exit fullscreen":"Fullscreen"}><Maximize2 size={15}/></button>{chatAlerts.length>0&&<button onClick={()=>{const chatBox=end.current?.parentElement;chatBox?.scrollTo({top:chatBox.scrollHeight,behavior:"smooth"})}} className="pointer-events-auto rounded-lg bg-black/60 p-2 text-white backdrop-blur" aria-label="Open chat"><Send size={15}/></button>}</div>
+   <div className="absolute left-3 top-3 z-20 flex max-w-[min(90%,320px)] flex-col gap-2">{chatAlerts.map(message=><button key={message.eventId||message.t} onClick={()=>{const chatBox=end.current?.parentElement;chatBox?.scrollTo({top:chatBox.scrollHeight,behavior:"smooth"})}} className="chat-alert pointer-events-auto flex items-center gap-2 rounded-xl bg-black/75 px-3 py-2 text-left text-xs text-white shadow-lg backdrop-blur"><Avatar name={message.u} size="h-7 w-7"/><span className="min-w-0"><b className="block">{message.u}</b><span className="block truncate text-slate-300">{message.text}</span></span></button>)}</div>
+  </div>
+  {src?.type==="drive"&&<div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-400"><span>Drive: {src.name}</span><span>Secure room stream</span>{admin&&<button onClick={prepareRoomQualities} className="btn2 !py-1 !px-2 text-[11px]" disabled={src.qualityStatus==="preparing"}>{src.qualityStatus==="preparing"?"Preparing qualities...":src.qualities?.length?"Rebuild qualities":"Prepare qualities"}</button>}</div>}
+  <div className="mt-3 flex flex-wrap gap-1">{EM.map(reaction=><button key={reaction} disabled={removed} onClick={()=>!removed&&R.react(reaction)} className="rounded-lg bg-white/5 px-2 py-1 text-lg transition hover:scale-125 disabled:opacity-40">{reaction}</button>)}</div>
+  </div>
+  <aside className="card flex h-[560px] flex-col lg:h-auto"><div className="space-y-2 border-b border-white/10 p-3"><div className="flex items-center"><p className="text-sm font-semibold">Members ({R.members.filter(member=>member.online&&!member.kicked).length})</p><button onClick={()=>setChatMuted(value=>!value)} className="ml-auto text-slate-400" aria-label={chatMuted?"Enable chat notifications":"Mute chat notifications"}>{chatMuted?<BellOff size={15}/>:<Bell size={15}/>}</button></div>
+  {R.members.map(member=><div key={member.id} onClick={()=>openMember(member)} onContextMenu={event=>{event.preventDefault();openMember(member)}} onPointerDown={()=>startPress(member)} onPointerUp={stopPress} onPointerCancel={stopPress} onPointerMove={stopPress} className="flex cursor-pointer select-none items-center gap-2 rounded-lg p-1 text-xs transition hover:bg-white/5"><span title={`Connection: ${member.voiceStatus||"online"}`} className={`h-2 w-2 ${member.voiceStatus==="connected"?"bg-emerald-400":member.voiceStatus==="reconnecting"||member.voiceStatus==="connecting"?"bg-amber-300":"bg-sky-300"} rounded-full`}/><span className="relative"><Avatar name={member.name} photoURL={member.photoURL} size="h-6 w-6"/>{member.admin&&<Crown size={14} fill="#fbbf24" className="absolute -right-2 -top-2 text-amber-300"/>}</span><span className="min-w-0 flex-1 truncate">{member.name}{member.self&&" (you)"}</span>{member.muted===false?<Mic size={13} className="text-emerald-300"/>:<MicOff size={13} className="text-slate-500"/>}{member.speaking&&<span className="text-[10px] text-emerald-300">Speaking</span>}{member.admin&&<span className="flex items-center gap-1 text-amber-300"><Crown size={13}/>Admin</span>}</div>)}
+  </div><VoiceChat code={code} selfId={id} members={R.members} backend={R.backend} setPresence={R.setPresence} micDisabled={R.moderation?.micDisabled||removed} miniSlot={fullScreen?voiceMiniSlot:null}/>
+  <RoomChat messages={R.msgs} userId={id} disabled={removed} endRef={end} onSend={(text,replyTo)=>R.send(text,replyTo)} onReact={(messageId,reaction)=>R.reactMessage(messageId,reaction)}/>
+  </aside></div>{selectedMember&&<MemberActions member={selectedMember} isAdmin={admin} onClose={()=>setSelectedMember(null)} onAction={action=>memberAction(selectedMember,action)}/>}<RoomFriendInvites open={inviteFriendsOpen} onClose={()=>setInviteFriendsOpen(false)} friends={friendApi.friends} status={friendApi.friendsStatus} error={friendApi.error} senderUid={id} roomId={code} members={R.members} memberActivity={R.roomMemberActivity} onInvite={friend=>friendApi.callFriendApi({operation:"invite",friendUid:friend.id,roomId:code})}/><DrivePicker open={drivePickerOpen&&driveAllowed} onClose={()=>setDrivePickerOpen(false)} onSelect={selectRoomVideo} returnTo={`/room/${code}`} roomCode={code}/></div>;
+}

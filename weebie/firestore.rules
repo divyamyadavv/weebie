@@ -1,0 +1,293 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null
+        && (request.auth.token.email_verified == true
+          || request.auth.token.firebase.sign_in_provider == 'google.com');
+    }
+
+    function roomPath(roomId) {
+      return /databases/$(database)/documents/rooms/$(roomId);
+    }
+
+    function memberPath(roomId, memberId) {
+      return /databases/$(database)/documents/rooms/$(roomId)/members/$(memberId);
+    }
+
+    function roomSessionPath(roomId, memberId, sessionId) {
+      return /databases/$(database)/documents/rooms/$(roomId)/presenceSessions/$(memberId + '_' + sessionId);
+    }
+
+    function hasFreshRoomSession(roomId, memberId, sessionId) {
+      let sessionRef = roomSessionPath(roomId, memberId, sessionId);
+      let session = get(sessionRef).data;
+      return exists(sessionRef)
+        && session.uid == memberId
+        && session.online == true
+        && session.lastSeen is timestamp
+        && session.lastSeen > request.time - duration.value(75, 's');
+    }
+
+    function friendPath(userId, friendId) {
+      return /databases/$(database)/documents/users/$(userId)/friends/$(friendId);
+    }
+
+    function blockPath(userId, blockedId) {
+      return /databases/$(database)/documents/users/$(userId)/blocks/$(blockedId);
+    }
+
+    function areFriends(firstUid, secondUid) {
+      return exists(friendPath(firstUid, secondUid))
+        && exists(friendPath(secondUid, firstUid));
+    }
+
+    function isUnblocked(firstUid, secondUid) {
+      return !exists(blockPath(firstUid, secondUid))
+        && !exists(blockPath(secondUid, firstUid));
+    }
+
+    function canChat(firstUid, secondUid) {
+      return firstUid != secondUid
+        && areFriends(firstUid, secondUid)
+        && isUnblocked(firstUid, secondUid);
+    }
+
+    function hasFreshRoomPresence(roomId, memberId) {
+      let memberRef = memberPath(roomId, memberId);
+      let member = get(memberRef).data;
+      return exists(memberRef)
+        && member.uid == memberId
+        && member.kicked != true
+        && member.get('blocked', false) != true
+        && member.get('removed', false) != true
+        && member.online == true
+        && member.sessionId is string
+        && member.lastSeen is timestamp
+        && member.lastSeen > request.time - duration.value(75, 's')
+        && hasFreshRoomSession(roomId, memberId, member.sessionId);
+    }
+
+    function isActiveMember(roomId) {
+      return signedIn() && hasFreshRoomPresence(roomId, request.auth.uid);
+    }
+
+    function isRoomAdmin(roomId) {
+      return isActiveMember(roomId)
+        && get(roomPath(roomId)).data.adminId == request.auth.uid;
+    }
+
+    match /rooms/{roomId} {
+      // Invite codes are unguessable room IDs; require authentication to resolve one.
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn()
+        && request.resource.data.hostId == request.auth.uid
+        && request.resource.data.adminId == request.auth.uid
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.originalOwnerId == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.playing == false
+        && request.resource.data.time is number
+        && request.resource.data.playbackRate == 1
+        && getAfter(memberPath(roomId, request.auth.uid)).data.uid == request.auth.uid
+        && getAfter(memberPath(roomId, request.auth.uid)).data.online == true;
+
+      allow update: if isRoomAdmin(roomId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'adminId', 'ownerUid', 'voluntaryTransfer', 'source', 'playing', 'time',
+          'playbackRate', 'eventTimestamp', 'eventType', 'controllerId', 'updatedAt'
+        ])
+        && request.resource.data.playing is bool
+        && request.resource.data.time is number
+        && request.resource.data.time >= 0
+        && (!('playbackRate' in request.resource.data)
+          || request.resource.data.playbackRate in [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2])
+        && request.resource.data.eventTimestamp is number
+        && request.resource.data.eventType is string
+        && request.resource.data.controllerId == request.auth.uid
+        && (
+          (request.resource.data.adminId == resource.data.adminId
+            && ((!('ownerUid' in resource.data) && !('ownerUid' in request.resource.data))
+              || ('ownerUid' in resource.data && request.resource.data.ownerUid == resource.data.ownerUid)))
+          || (request.resource.data.adminId != resource.data.adminId
+            && request.resource.data.ownerUid == request.resource.data.adminId
+            && request.resource.data.voluntaryTransfer == true)
+        )
+        && (request.resource.data.adminId == resource.data.adminId
+          || hasFreshRoomPresence(roomId, request.resource.data.adminId));
+
+      allow delete: if false;
+
+      match /presenceSessions/{sessionId} {
+        allow read: if isActiveMember(roomId);
+        allow create: if signedIn()
+          && sessionId == request.auth.uid + '_' + getAfter(memberPath(roomId, request.auth.uid)).data.sessionId
+          && existsAfter(memberPath(roomId, request.auth.uid))
+          && getAfter(memberPath(roomId, request.auth.uid)).data.uid == request.auth.uid
+          && getAfter(memberPath(roomId, request.auth.uid)).data.kicked != true
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.online is bool
+          && request.resource.data.lastSeen == request.time
+          && request.resource.data.keys().hasOnly(['uid', 'online', 'lastSeen']);
+        allow update: if signedIn()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.online is bool
+          && request.resource.data.lastSeen == request.time
+          && resource.data.uid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['uid', 'online', 'lastSeen']);
+        allow delete: if signedIn()
+          && resource.data.uid == request.auth.uid;
+      }
+
+      match /members/{memberId} {
+        allow get: if signedIn()
+          && (memberId == request.auth.uid || isActiveMember(roomId));
+        allow list: if isActiveMember(roomId);
+
+        allow create: if signedIn()
+          && memberId == request.auth.uid
+          && existsAfter(roomPath(roomId))
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.name is string
+          && request.resource.data.online == true
+          && request.resource.data.lastSeen == request.time
+          && request.resource.data.joinedAt == request.time
+          && request.resource.data.kicked == false;
+
+        allow update: if signedIn()
+          && request.resource.data.uid == resource.data.uid
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastSeen'])
+            || request.resource.data.lastSeen == request.time)
+          && ((memberId == request.auth.uid
+              && resource.data.kicked != true
+              && request.resource.data.kicked == resource.data.kicked
+              && (!('joinedAt' in resource.data)
+                || request.resource.data.joinedAt == resource.data.joinedAt)
+              && (!('joinSequence' in resource.data)
+                || request.resource.data.joinSequence == resource.data.joinSequence)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'name', 'photoURL', 'online', 'muted', 'speaking', 'voiceStatus',
+                'sessionId', 'joinSequence', 'joinedAt', 'lastSeen'
+              ]))
+            || (isRoomAdmin(roomId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'online', 'micDisabled', 'roomMuted'
+              ])));
+
+        allow delete: if signedIn() && memberId == request.auth.uid
+          && resource.data.kicked != true;
+      }
+
+      match /messages/{messageId} {
+        allow read: if isActiveMember(roomId);
+        allow create: if isActiveMember(roomId)
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.t is number
+          && ((request.resource.data.text is string
+              && request.resource.data.text.size() > 0
+              && request.resource.data.text.size() <= 500)
+            || request.resource.data.react == true
+            || request.resource.data.system == true);
+        allow update, delete: if false;
+      }
+
+      match /reports/{reportId} {
+        allow create: if isActiveMember(roomId)
+          && request.resource.data.reporterId == request.auth.uid
+          && request.resource.data.targetId is string;
+        allow read: if isRoomAdmin(roomId);
+        allow update, delete: if false;
+      }
+
+      match /signals/{targetId}/events/{signalId} {
+        allow create: if isActiveMember(roomId)
+          && request.resource.data.from == request.auth.uid
+          && request.resource.data.to == targetId
+          && request.resource.data.signalType in ['offer', 'answer', 'candidate', 'heard']
+          && exists(memberPath(roomId, targetId));
+        allow read, delete: if isActiveMember(roomId)
+          && targetId == request.auth.uid;
+        allow update: if false;
+      }
+    }
+
+    match /users/{userId}/rooms/{roomId} {
+      allow read: if signedIn() && userId == request.auth.uid;
+      allow create, update: if signedIn()
+        && userId == request.auth.uid
+        && request.resource.data.code == roomId
+        && request.resource.data.name is string
+        && existsAfter(memberPath(roomId, userId))
+        && getAfter(memberPath(roomId, userId)).data.uid == userId
+        && getAfter(memberPath(roomId, userId)).data.kicked != true;
+      allow delete: if signedIn() && userId == request.auth.uid;
+    }
+
+    match /users/{userId}/blocks/{blockedId} {
+      allow read: if signedIn() && userId == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    match /users/{userId}/presenceSessions/{sessionId} {
+      allow read: if signedIn()
+        && (userId == request.auth.uid
+          || (areFriends(userId, request.auth.uid)
+            && isUnblocked(userId, request.auth.uid)));
+      allow create, update: if signedIn()
+        && userId == request.auth.uid
+        && request.resource.data.uid == userId
+        && request.resource.data.online is bool
+        && request.resource.data.lastSeen == request.time
+        && request.resource.data.keys().hasOnly(['uid', 'online', 'lastSeen', 'startedAt']);
+      allow delete: if signedIn() && userId == request.auth.uid;
+    }
+
+    match /friendRequests/{requestId} {
+      allow get, list: if signedIn()
+        && (resource.data.senderUid == request.auth.uid
+          || resource.data.recipientUid == request.auth.uid);
+
+      // Authenticated server routes validate and atomically apply all mutations.
+      allow create, update, delete: if false;
+    }
+
+    match /users/{userId}/friends/{friendUid} {
+      allow read: if signedIn() && userId == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    match /conversations/{conversationId} {
+      allow get: if signedIn()
+        && resource.data.participants is list
+        && resource.data.participants.size() == 2
+        && request.auth.uid in resource.data.participants
+        && canChat(resource.data.participants[0], resource.data.participants[1]);
+      allow list, create, update, delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if signedIn()
+          && exists(/databases/$(database)/documents/conversations/$(conversationId))
+          && get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants is list
+          && get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants.size() == 2
+          && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants
+          && canChat(
+            get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants[0],
+            get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants[1]
+          );
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /roomInvitations/{invitationId} {
+      allow get, list: if signedIn()
+        && (resource.data.senderUid == request.auth.uid
+          || resource.data.recipientUid == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+  }
+}

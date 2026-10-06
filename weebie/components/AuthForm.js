@@ -1,0 +1,30 @@
+"use client";
+import {useEffect,useState} from "react";import Link from "next/link";import {useRouter} from "next/navigation";
+import {Mail,Lock,User,Eye,EyeOff} from "lucide-react";
+import {requiresEmailVerification,sendPasswordReset,sendVerificationEmail,signIn} from "../lib/auth";import Logo from "./Logo";import {isFirebaseAuthReady} from "../lib/firebase";import {useAuth} from "./AuthProvider";
+function InputField({icon:Icon,...props}){return <div className="relative"><Icon size={16} className="absolute left-3.5 top-3.5 text-slate-400"/><input className="input pl-10" {...props}/></div>}
+export default function AuthForm({signup}){
+ const r=useRouter(),{user,loading,requiresVerification}=useAuth(),[show,setShow]=useState(false),[busy,setBusy]=useState(false),[f,setF]=useState({name:"",email:"",pw:"",confirm:""}),[msg,setMsg]=useState("");
+ const destination=()=>{const requested=new URLSearchParams(window.location.search).get("next");return requested?.startsWith("/")&&!requested.startsWith("//")?requested:"/dashboard"};
+ useEffect(()=>{if(!loading&&user&&!busy)r.replace(requiresVerification?`/verify-email?next=${encodeURIComponent(destination())}`:destination())},[loading,user,busy,requiresVerification,r]);
+ const up=k=>e=>setF(x=>({...x,[k]:e.target.value}));
+ const run=async k=>{setMsg("");setBusy(true);try{const authenticated=await signIn(k,{email:f.email,pw:f.pw,name:f.name});if(k==="signup"){const actionUrl=new URL("/verify-email",window.location.origin);actionUrl.searchParams.set("next",destination());try{await sendVerificationEmail(authenticated,actionUrl.toString());r.replace(`/verify-email?sent=1&next=${encodeURIComponent(destination())}`)}catch(error){r.replace(`/verify-email?send=failed&next=${encodeURIComponent(destination())}`);return}}else if(requiresEmailVerification(authenticated))r.replace(`/verify-email?next=${encodeURIComponent(destination())}`);else r.replace(destination())}catch(e){setMsg(e.message.replace(/^Firebase: /,""))}finally{setBusy(false)}};
+ const submit=e=>{e.preventDefault();if(!isFirebaseAuthReady)return setMsg("Firebase Authentication is not configured. Add the Firebase web app values from .env.example, then restart the development server.");if(!f.email||!f.pw)return setMsg("Please fill in your email and password.");if(signup&&!f.name.trim())return setMsg("Please enter a username.");if(signup&&f.pw!==f.confirm)return setMsg("Passwords do not match.");run(signup?"signup":"login")};
+ const google=()=>{if(!isFirebaseAuthReady)return setMsg("Firebase Authentication is not configured. Add the Firebase web app values from .env.example, then restart the development server.");run("google")};
+ const reset=async()=>{if(!isFirebaseAuthReady)return setMsg("Firebase Authentication is not configured.");if(!f.email)return setMsg("Enter your email address first.");setBusy(true);try{await sendPasswordReset(f.email);setMsg("Password reset email sent. Check your inbox.")}catch(e){setMsg(e.message.replace(/^Firebase: /,""))}finally{setBusy(false)}};
+ if(loading||(user&&!busy))return <div className="grid min-h-screen place-items-center text-sm text-slate-400">Checking your account...</div>;
+ return <div className="grid min-h-screen place-items-center p-4"><form onSubmit={submit} className="card fade w-full max-w-sm space-y-3 p-7 text-center">
+  <div className="flex justify-center"><Logo/></div><h1 className="text-xl font-bold">{signup?"Create Your Account":"Welcome Back"}</h1>
+  <p className="text-sm text-slate-400">{signup?"Join Weebie and start watching together":"Sign in to continue your watch journey"}</p>
+  <button type="button" onClick={google} disabled={busy} className="flex w-full items-center justify-center gap-3 rounded-xl bg-white py-2.5 text-sm font-semibold text-slate-900 disabled:opacity-50"><svg aria-hidden="true" viewBox="0 0 48 48" className="h-5 w-5 shrink-0"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg><span>{signup?"Sign up":"Continue"} with Google</span></button>
+  <p className="text-xs text-slate-500">OR</p>
+    {signup&&<InputField icon={User} placeholder="Username" value={f.name} onChange={up("name")}/>} 
+    <InputField icon={Mail} type="email" placeholder="Email address" value={f.email} onChange={up("email")}/>
+    <div className="relative"><InputField icon={Lock} type={show?"text":"password"} placeholder="Password" value={f.pw} onChange={up("pw")}/><button type="button" onClick={()=>setShow(!show)} className="absolute right-3 top-3.5 text-slate-400" aria-label="Toggle password">{show?<EyeOff size={16}/>:<Eye size={16}/>}</button></div>
+  {signup&&<div className="relative"><InputField icon={Lock} type={show?"text":"password"} placeholder="Confirm password" value={f.confirm} onChange={up("confirm")}/></div>}
+  {!signup&&<p className="text-right text-xs"><button type="button" onClick={reset} disabled={busy} className="text-violet-400 disabled:opacity-50">Forgot password?</button></p>}
+  {msg&&<p role="alert" className="rounded-lg bg-amber-500/10 p-2 text-xs text-amber-300">{msg}</p>}
+  {!isFirebaseAuthReady&&<p className="text-xs text-amber-300">Real sign-in needs Firebase web app configuration.</p>}
+  <button disabled={busy} className="btn w-full disabled:opacity-50">{busy?"Please wait...":signup?"Create Account":"Sign In"}</button>
+  <p className="text-xs text-slate-400">{signup?"Already have an account? ":"Don't have an account? "}<Link className="text-violet-400" href={signup?"/login":"/signup"}>{signup?"Sign In":"Sign Up"}</Link></p>
+ </form></div>}

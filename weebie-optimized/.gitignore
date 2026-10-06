@@ -1,0 +1,8 @@
+node_modules/
+.next/
+.next-dev/
+.weebie/
+out/
+.env*
+!.env.example
+!.env.local.example

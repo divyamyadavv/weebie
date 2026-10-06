@@ -1,0 +1,35 @@
+const test=require("node:test");
+const assert=require("node:assert/strict");
+const fs=require("node:fs");
+const path=require("node:path");
+const {adminPlaybackRestoreAction,isUnrestoredAdminReset}=require("../lib/playbackSync.cjs");
+
+test("restores a rejoining admin from saved playback state exactly once",()=>{
+ const savedState={time:541,playing:true,eventType:"progress"};
+ assert.equal(adminPlaybackRestoreAction(savedState,{admin:true,restored:false}),"apply");
+ assert.equal(adminPlaybackRestoreAction(savedState,{admin:true,restored:true}),"none");
+ assert.equal(adminPlaybackRestoreAction(savedState,{admin:false,restored:false}),"none");
+ assert.equal(adminPlaybackRestoreAction(null,{admin:true,restored:false}),"none");
+ assert.equal(adminPlaybackRestoreAction({...savedState,eventType:"admin-transfer"},{admin:true,restored:false}),"mark");
+});
+
+test("blocks fresh admin player reset events until the saved state is restored",()=>{
+ const savedState={time:541,playing:true,eventType:"progress"};
+ for(const eventType of ["play","pause","seeked","progress"]){
+  assert.equal(isUnrestoredAdminReset(savedState,{time:0,eventType},false),true);
+ }
+ assert.equal(isUnrestoredAdminReset(savedState,{time:0,eventType:"play"},true),false);
+ assert.equal(isUnrestoredAdminReset(savedState,{time:541.4,eventType:"progress"},false),false);
+ assert.equal(isUnrestoredAdminReset({...savedState,time:0},{time:0,eventType:"progress"},false),false);
+});
+
+test("room page wires admin restore and reset protection",()=>{
+ const page=fs.readFileSync(path.join(__dirname,"..","app","room","[code]","page.js"),"utf8");
+ assert.equal(page.includes('if(admin||state.eventType==="admin-transfer")return;'),false);
+ assert.ok(page.includes('import {shouldApplyPlaybackState,adminPlaybackRestoreAction,isUnrestoredAdminReset} from "../../../lib/playbackSync.cjs";'));
+ assert.ok(page.includes("adminRestored=useRef(false)"));
+ assert.ok(page.includes('if(!admin)adminRestored.current=false},[admin]);'));
+ assert.ok(page.includes('if(admin){const action=adminPlaybackRestoreAction(state,{admin,restored:adminRestored.current});if(action==="apply"&&api.current){api.current.apply(state);adminRestored.current=true}else if(action==="mark")adminRestored.current=true;return}if(state.eventType==="admin-transfer")return;if(shouldApplyPlaybackState('));
+ assert.ok(page.includes("if(isUnrestoredAdminReset(state,event,adminRestored.current)){if(api.current){api.current.apply(state);adminRestored.current=true}return}"));
+ assert.equal(page.includes("adminSince"),false);
+});

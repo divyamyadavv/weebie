@@ -1,0 +1,3 @@
+12:16:13.200 [NamespaceSystem-akka.actor.default-dispatcher-5] INFO akka.event.slf4j.Slf4jLogger - Slf4jLogger started
+12:16:13.434 [main] INFO com.firebase.server.forge.App$ - Listening at 127.0.0.1:9000
+12:16:18.017 [NamespaceSystem-akka.actor.default-dispatcher-5] INFO com.firebase.core.namespace.NamespaceActor - demo-weebie-local-default-rtdb successfully activated FBKV (SurveyIdle(0)) wait: 150ms, init: 0ms

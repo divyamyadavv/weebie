@@ -1,0 +1,24 @@
+const VOICE_SIGNAL_MAX_AGE_MS = 60_000;
+
+function isStaleVoiceSignal(signal, now = Date.now()) {
+  const timestamp = Number(signal?.t);
+  return !Number.isFinite(timestamp) || now - timestamp > VOICE_SIGNAL_MAX_AGE_MS;
+}
+
+function shouldInitiateVoiceOffer(selfId, peerId) {
+  return String(selfId) < String(peerId);
+}
+
+function shouldReplaceVoicePeer(connectionState) {
+  return connectionState === "connected"
+    || connectionState === "failed"
+    || connectionState === "closed"
+    || connectionState === "disconnected";
+}
+
+module.exports = {
+  VOICE_SIGNAL_MAX_AGE_MS,
+  isStaleVoiceSignal,
+  shouldInitiateVoiceOffer,
+  shouldReplaceVoicePeer,
+};

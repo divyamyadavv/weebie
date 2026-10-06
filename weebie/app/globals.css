@@ -1,0 +1,17 @@
+@tailwind base;@tailwind components;@tailwind utilities;
+html{scroll-behavior:smooth}
+body{@apply bg-ink text-slate-100 antialiased;background-image:radial-gradient(circle at 20% 0%,rgba(124,58,237,.18),transparent 40%),radial-gradient(circle at 90% 100%,rgba(30,41,120,.3),transparent 40%);min-height:100vh}
+@layer components{
+.card{@apply rounded-2xl border border-white/10 bg-white/5 backdrop-blur transition hover:border-violet-500/40}
+.btn{@apply inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-500 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_0_20px_rgba(139,92,246,.4)] transition hover:-translate-y-0.5 hover:brightness-110}
+.btn2{@apply inline-flex items-center justify-center gap-2 rounded-xl border border-violet-400/40 px-5 py-2.5 text-sm font-semibold transition hover:bg-violet-500/10}
+.input{@apply w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm outline-none transition focus:border-violet-500 focus:shadow-[0_0_12px_rgba(139,92,246,.4)]}
+}
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.fade{animation:fadeUp .6s ease both}
+@keyframes floatUp{0%{opacity:0;transform:translateY(18px) scale(.8)}15%{opacity:1}100%{transform:translateY(-150px) scale(1.08);opacity:0}}
+.float{animation:floatUp 1.4s ease forwards}
+.reaction-float{animation:floatUp 1.7s cubic-bezier(.2,.75,.35,1) forwards;text-shadow:0 2px 12px rgba(0,0,0,.8)}
+@keyframes chatIn{from{opacity:0;transform:translateY(-8px) scale(.96)}to{opacity:1;transform:none}}
+.chat-alert{animation:chatIn .25s ease both}
+.system-message{@apply mx-auto w-fit rounded-full border border-violet-400/20 bg-violet-500/10 px-3 py-1 text-center text-[11px] text-violet-200}
