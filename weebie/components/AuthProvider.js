@@ -16,7 +16,7 @@ export function AuthProvider({children}){
   const syncSession=async(nextUser,revision)=>{
    try{
     let response;
-    if(nextUser){const idToken=await nextUser.getIdToken();response=await fetch("/api/auth/session",{method:"POST",credentials:"same-origin",headers:{Authorization:`Bearer ${idToken}`},cache:"no-store"})}
+    if(nextUser){const idToken=await nextUser.getIdToken();if(!active||sessionRevision.current!==revision)return;response=await fetch("/api/auth/session",{method:"POST",credentials:"same-origin",headers:{Authorization:`Bearer ${idToken}`},cache:"no-store"})}
     else response=await fetch("/api/auth/session",{method:"DELETE",credentials:"same-origin",cache:"no-store"});
     if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||"Secure room session is unavailable.")}
     if(active&&sessionRevision.current===revision){setServerSessionError(null);setServerSessionReady(true)}

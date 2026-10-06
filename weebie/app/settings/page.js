@@ -3,6 +3,7 @@ import {useCallback,useEffect,useState} from "react";import {useRouter} from "ne
 import {Bell,ChevronRight,Globe,HardDrive,KeyRound,LogOut,Shield,Trash2} from "lucide-react";
 import {deleteAccount,reauthenticate,sendPasswordReset,signOutAll,updateDisplayName} from "../../lib/auth";
 import {callFriendApi} from "../../lib/friendApiClient";
+import {fetchWithFirebaseAuth} from "../../lib/authenticatedFetch";
 import {startPresenceTracking,stopPresenceTracking} from "../../lib/presence";
 import {usePreferences} from "../../lib/preferences";
 import {deleteConfirmationReady,describeProviders,friendlyAuthError,hasPasswordProvider} from "../../lib/settingsUi.cjs";
@@ -24,11 +25,11 @@ export default function Settings(){
  const email=user?.email||"",providers=describeProviders(user?.providerData),needsPassword=hasPasswordProvider(user?.providerData);
  useEffect(()=>{if(!edit)setName(user?.displayName||user?.email?.split("@")[0]||"Account")},[user,edit]);
  useEffect(()=>{
-  if(!uid||!serverSessionReady)return;
+  if(!uid)return;
   let active=true;
-  fetch("/api/drive/status",{credentials:"same-origin",cache:"no-store"}).then(response=>response.json()).then(data=>{if(active)setDrive({loaded:true,connected:data?.connected===true})}).catch(()=>{if(active)setDrive({loaded:true,connected:false,unknown:true})});
+  fetchWithFirebaseAuth("/api/drive/status").then(response=>response.json()).then(data=>{if(active)setDrive({loaded:true,connected:data?.connected===true})}).catch(()=>{if(active)setDrive({loaded:true,connected:false,unknown:true})});
   return()=>{active=false};
- },[uid,serverSessionReady]);
+ },[uid]);
  const loadBlocked=useCallback(async()=>{
   setBlockedError("");
   try{const response=await fetch("/api/account/blocked",{credentials:"same-origin",cache:"no-store"}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not load blocked accounts.");setBlocked(data.blocked||[])}
@@ -43,7 +44,7 @@ export default function Settings(){
  };
  const disconnectDrive=async()=>{
   setMsg("");
-  try{const response=await fetch("/api/drive/disconnect",{method:"POST",credentials:"same-origin",cache:"no-store"});if(!response.ok)throw new Error("Could not disconnect Google Drive.");setDrive({loaded:true,connected:false})}
+  try{const response=await fetchWithFirebaseAuth("/api/drive/disconnect",{method:"POST"});if(!response.ok)throw new Error("Could not disconnect Google Drive.");setDrive({loaded:true,connected:false})}
   catch(exception){setMsg(exception.message)}
  };
  const unblock=async blockedUid=>{

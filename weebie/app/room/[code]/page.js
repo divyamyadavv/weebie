@@ -6,6 +6,7 @@ import Logo from "../../../components/Logo";import {Avatar} from "../../../compo
 import RoomChat from "../../../components/RoomChat";
 import DrivePicker from "../../../components/DrivePicker";
 import {useAuth} from "../../../components/AuthProvider";import {useRoom} from "../../../lib/realtime";import {ytId} from "../../../lib/youtube";
+import {fetchWithFirebaseAuth} from "../../../lib/authenticatedFetch";
 import {useFriends} from "../../../lib/friends";
 import {shouldApplyPlaybackState,adminPlaybackRestoreAction,isAdminPlaybackRestored,isUnrestoredAdminReset} from "../../../lib/playbackSync.cjs";
 import driveOAuthErrors from "../../../lib/driveOAuthErrors.cjs";
@@ -72,7 +73,7 @@ export default function Room({params}){
  const local=event=>{if(!admin)return;const eventType=event.eventType||"playback";if(isUnrestoredAdminReset(state,event,adminRestored.current)){api.current?.restore?.(state);return}R.pushState({source:src,playing:event.playing,time:event.time,playbackRate:Number(event.playbackRate)||Number(state?.playbackRate)||1,eventType})};
  const markPlaybackApplied=appliedState=>{if(appliedState?.controllerId===id)playbackInitialized.current=true};
  const changePlaybackRate=event=>{if(admin)R.pushState({source:src,playing:event.playing,time:event.time,playbackRate:event.playbackRate,eventType:event.eventType||"speed"})};
- const prepareRoomQualities=async()=>{if(!admin||!src||src.type!=="drive")return;try{setErr("");const response=await fetch("/api/drive/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({roomCode:code}),cache:"no-store"});const data=await response.json();if(!response.ok)throw new Error(data.error||"Quality preparation failed.");setErr(data.warnings?.join(" ")||"Quality preparation completed.");}catch(error){setErr(error.message||"Quality preparation failed.")}};
+ const prepareRoomQualities=async()=>{if(!admin||!src||src.type!=="drive")return;try{setErr("");const response=await fetchWithFirebaseAuth("/api/drive/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({roomCode:code})});const data=await response.json();if(!response.ok)throw new Error(data.error||"Quality preparation failed.");setErr(data.warnings?.join(" ")||"Quality preparation completed.");}catch(error){setErr(error.message||"Quality preparation failed.")}};
  const setYT=event=>{event.preventDefault();if(!admin)return;const videoId=ytId(yurl);if(!videoId)return setErr("That isn't a valid YouTube link.");setErr("");setYurl("");setSettings(false);R.pushState({source:{type:"yt",id:videoId,url:yurl.trim()},playing:false,time:0,playbackRate:1,eventType:"source"})};
  const drive=()=>{if(driveAllowed){setErr("");setDrivePickerOpen(true)}};
  const selectRoomVideo=video=>{if(!admin)return;setErr("");setSettings(false);R.pushState({source:{type:"drive",...video,qualityStatus:video?.qualityStatus||"not-prepared",qualities:Array.isArray(video?.qualities)?video.qualities:[]},playing:false,time:0,playbackRate:1,eventType:"source"})};

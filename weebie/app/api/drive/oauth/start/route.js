@@ -1,5 +1,5 @@
 import {randomBytes} from "node:crypto";
-import {assertSameOrigin,HttpError,jsonError,verifySession} from "../../../../../lib/serverFirebase";
+import {assertSameOrigin,HttpError,jsonError,verifyFirebaseIdToken} from "../../../../../lib/serverFirebase";
 import {DRIVE_SCOPE,sealOAuthState,serverDriveConfig} from "../../../../../lib/driveServer";
 import {driveRedirectMatchesApp} from "../../../../../lib/driveOAuthErrors.cjs";
 
@@ -14,7 +14,7 @@ function safeReturnTo(value,origin){
 export async function POST(request){
  try{
   assertSameOrigin(request);
-  const user=await verifySession(request),config=serverDriveConfig();
+  const user=await verifyFirebaseIdToken(request),config=serverDriveConfig();
   const origin=new URL(request.url).origin;
   if(!driveRedirectMatchesApp(config.redirectUri,origin))throw new HttpError(503,"GOOGLE_OAUTH_REDIRECT_URI must exactly match this app's /api/drive/oauth/callback URL.");
   let body={};try{body=await request.json()}catch{}

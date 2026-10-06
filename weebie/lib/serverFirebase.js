@@ -14,14 +14,20 @@ export class HttpError extends Error{
 
 export function getAdminServices(){
  if(services)return services;
- const projectId=process.env.FIREBASE_ADMIN_PROJECT_ID||process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+ const usingEmulators=process.env.NODE_ENV==="development"&&process.env.NEXT_PUBLIC_FIREBASE_EMULATORS==="true";
+ const clientProjectId=usingEmulators?(process.env.NEXT_PUBLIC_FIREBASE_EMULATOR_PROJECT_ID||"demo-weebie-local"):process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+ const configuredProjectId=process.env.FIREBASE_ADMIN_PROJECT_ID;
+ if(clientProjectId&&configuredProjectId&&clientProjectId!==configuredProjectId)throw new HttpError(503,"Firebase server authentication project does not match the client project.");
+ const projectId=configuredProjectId||clientProjectId;
  if(!projectId)throw new HttpError(503,"Firebase server authentication is not configured.");
  let credential;
  try{
   const serialized=process.env.FIREBASE_ADMIN_CREDENTIALS_JSON;
   credential=serialized?cert(JSON.parse(serialized)):applicationDefault();
  }catch{throw new HttpError(503,"Firebase server credentials are invalid.")}
- const app=getApps().find(item=>item.name==="weebie-server")||initializeApp({credential,projectId},"weebie-server");
+ const existing=getApps().find(item=>item.name==="weebie-server");
+ if(existing&&existing.options.projectId!==projectId)throw new HttpError(503,"Firebase server authentication project does not match the configured project.");
+ const app=existing||initializeApp({credential,projectId},"weebie-server");
  services={auth:getAuth(app),db:getFirestore(app)};
  return services;
 }
@@ -49,7 +55,11 @@ export async function verifyFirebaseIdToken(request){
  const authorization=request.headers.get("authorization")||"";
  if(!authorization.startsWith("Bearer "))throw new HttpError(401,"Sign in to Weebie first.");
  try{return assertSignedIn(await getAdminServices().auth.verifyIdToken(authorization.slice(7),true))}
- catch(error){if(error instanceof HttpError)throw error;throw new HttpError(401,"Your Weebie sign-in expired. Sign in again.")}
+ catch(error){
+  if(error instanceof HttpError)throw error;
+  console.error("[auth] Firebase ID token verification failed",error?.code||"unknown");
+  throw new HttpError(401,"Your Weebie sign-in expired. Sign in again.");
+ }
 }
 
 export async function issueSessionCookie(request){

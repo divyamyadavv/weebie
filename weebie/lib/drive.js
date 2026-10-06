@@ -1,9 +1,13 @@
+import {fetchWithFirebaseAuth} from "./authenticatedFetch";
+
 export class DriveApiError extends Error{
  constructor(message,status){super(message);this.status=status}
 }
 
 async function api(path,options={}){
- const response=await fetch(path,{...options,credentials:"same-origin",cache:"no-store",headers:{...(options.body?{"Content-Type":"application/json"}:{}),...options.headers}});
+ const headers=new Headers(options.headers);
+ if(options.body&&!headers.has("Content-Type"))headers.set("Content-Type","application/json");
+ const response=await fetchWithFirebaseAuth(path,{...options,headers});
  const data=response.status===204?{}:await response.json().catch(()=>({}));
  if(!response.ok)throw new DriveApiError(data.error||"Google Drive request failed.",response.status);
  return data;

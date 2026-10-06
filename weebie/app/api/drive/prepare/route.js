@@ -1,4 +1,4 @@
-import {assertSameOrigin,getAdminServices,getRoomForMember,HttpError,jsonError,verifySession} from "../../../../lib/serverFirebase";
+import {assertSameOrigin,getAdminServices,getRoomForMember,HttpError,jsonError,verifyFirebaseIdToken} from "../../../../lib/serverFirebase";
 import {cleanupQualityArtifacts,prepareDriveQualitiesForRoom} from "../../../../lib/mediaQualityProcessing";
 
 export const runtime="nodejs";
@@ -8,7 +8,7 @@ export async function POST(request){
  let roomRef,source,roomCode,prepared,db;
  try{
   assertSameOrigin(request);
-  const user=await verifySession(request),body=await request.json();
+  const user=await verifyFirebaseIdToken(request),body=await request.json();
   const code=String(body.roomCode||"").toUpperCase();roomCode=code;
   if(!code)throw new HttpError(400,"A room code is required to prepare qualities.");
   db=getAdminServices().db;
