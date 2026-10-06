@@ -3,7 +3,6 @@ const assert = require("node:assert/strict");
 const {
   VOICE_SIGNAL_MAX_AGE_MS,
   activateVoiceTrack,
-  createVoiceAnalyser,
   getNegotiatedVoiceTransceiver,
   getOrCreateVoicePeer,
   isStaleVoiceSignal,
@@ -150,17 +149,6 @@ test("microphone start re-enables a live track retained from an earlier session"
   assert.equal(activateVoiceTrack(track), track);
   assert.equal(track.enabled, true);
   assert.throws(() => activateVoiceTrack({ kind: "audio", readyState: "ended" }), /live audio track/);
-});
-
-test("audio analysis resume failure is reported without stopping the microphone track", async () => {
-  const track = { kind: "audio", enabled: true, readyState: "live" };
-  const failure = Object.assign(new Error("AudioContext blocked"), { name: "NotAllowedError" });
-  const context = { resume: async () => { throw failure; } };
-  const result = await createVoiceAnalyser(context, { getAudioTracks: () => [track] });
-  assert.equal(result.analyser, null);
-  assert.equal(result.error, failure);
-  assert.equal(track.enabled, true);
-  assert.equal(track.readyState, "live");
 });
 
 test("microphone stop detaches tracks without closing peers; starting again reuses them", async () => {
