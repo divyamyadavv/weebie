@@ -74,6 +74,19 @@ function activateVoiceTrack(track) {
   return track;
 }
 
+async function createVoiceAnalyser(context, stream) {
+  try {
+    await context.resume();
+    const source = context.createMediaStreamSource(stream);
+    const analyser = context.createAnalyser();
+    source.connect(analyser);
+    analyser.fftSize = 512;
+    return { analyser: { context, source, analyser }, error: null };
+  } catch (error) {
+    return { analyser: null, error };
+  }
+}
+
 async function replaceVoiceTrack(transceiver, track) {
   const sender = transceiver?.sender;
   if (!sender || typeof sender.replaceTrack !== "function") {
@@ -98,6 +111,7 @@ async function replaceVoiceTracks(transceivers, track, onReplaced) {
 module.exports = {
   VOICE_SIGNAL_MAX_AGE_MS,
   activateVoiceTrack,
+  createVoiceAnalyser,
   getOrCreateVoicePeer,
   getNegotiatedVoiceTransceiver,
   isStaleVoiceSignal,

@@ -1,7 +1,7 @@
 "use client";
 import {useCallback,useEffect,useRef,useState} from "react";
 import {fbApp} from "./firebase";
-import {activateVoiceTrack,getNegotiatedVoiceTransceiver,getOrCreateVoicePeer,isStaleVoiceSignal,prepareVoiceAnswerTransceiver,removeRemoteVoiceStream,replaceVoiceTrack,replaceVoiceTracks,serializeVoiceDescription,shouldInitiateVoiceOffer,shouldReplaceVoicePeer,upsertRemoteVoiceStream} from "./voiceMesh.cjs";
+import {activateVoiceTrack,createVoiceAnalyser,getNegotiatedVoiceTransceiver,getOrCreateVoicePeer,isStaleVoiceSignal,prepareVoiceAnswerTransceiver,removeRemoteVoiceStream,replaceVoiceTrack,replaceVoiceTracks,serializeVoiceDescription,shouldInitiateVoiceOffer,shouldReplaceVoicePeer,upsertRemoteVoiceStream} from "./voiceMesh.cjs";
 
 const iceServers=()=>{
  const urls=(process.env.NEXT_PUBLIC_TURN_URLS||"").split(",").map(value=>value.trim()).filter(Boolean);
@@ -279,7 +279,8 @@ export function useVoiceRoom(code,selfId,members,backend,setPresence){
     kind:track.kind,
     enabled:track.enabled,
     muted:track.muted,
-    readyState:track.readyState
+    readyState:track.readyState,
+    audioTrackCount:stream.getAudioTracks().length
    });
    for(const [peerId,peer] of peersRef.current){
     const audioTransceivers=peer.getTransceivers().filter(item=>item.sender.track?.kind==="audio"||item.receiver.track?.kind==="audio");
@@ -307,11 +308,18 @@ export function useVoiceRoom(code,selfId,members,backend,setPresence){
    setEnabled(true);setMuted(false);setPresenceRef.current?.({muted:false});
    const AudioContext=window.AudioContext||window.webkitAudioContext;
    if(AudioContext&&!analyserRef.current){
-    const context=new AudioContext();await context.resume();
-    const source=context.createMediaStreamSource(stream),analyser=context.createAnalyser();source.connect(analyser);analyser.fftSize=512;analyserRef.current={context,source,analyser};
-    const data=new Uint8Array(analyser.frequencyBinCount);
-    const detect=()=>{analyser.getByteFrequencyData(data);const active=data.reduce((sum,value)=>sum+value,0)/data.length>12&&!track.muted;setSpeaking(active);if(active!==lastSpeakingRef.current){lastSpeakingRef.current=active;setPresenceRef.current?.({speaking:active})}rafRef.current=requestAnimationFrame(detect)};
-    detect();
+    const context=new AudioContext();
+    const result=await createVoiceAnalyser(context,stream);
+    if(result.analyser){
+     const {analyser,source}=result.analyser;
+     analyserRef.current=result.analyser;
+     const data=new Uint8Array(analyser.frequencyBinCount);
+     const detect=()=>{analyser.getByteFrequencyData(data);const active=data.reduce((sum,value)=>sum+value,0)/data.length>12&&!track.muted;setSpeaking(active);if(active!==lastSpeakingRef.current){lastSpeakingRef.current=active;setPresenceRef.current?.({speaking:active})}rafRef.current=requestAnimationFrame(detect)};
+     detect();
+    }else{
+     void context.close().catch(closeError=>console.warn("[voice-debug] audio-analysis-close-failed",closeError?.name||"error"));
+     console.warn("[voice-debug] audio-analysis-unavailable",result.error?.name||"error");
+    }
    }
   }catch(exception){
    stream?.getTracks().forEach(track=>track.stop());streamRef.current=null;
